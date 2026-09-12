@@ -1,0 +1,37 @@
+[Unit]
+Description=OnlyBackup HTTPS upload receiver
+Requires=onlybackup-writer.service
+After=network.target onlybackup-writer.service
+
+[Service]
+Type=simple
+User=onlybackup-receiver
+Group=onlybackup-ingest
+SupplementaryGroups=onlybackup-receiver
+UMask=0077
+ExecStart=/usr/local/bin/onlybackup-receiver --listen 0.0.0.0:8443 --socket /run/onlybackup/writer.sock --tls-cert /etc/onlybackup/server.crt --tls-key /etc/onlybackup/server.key
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+InaccessiblePaths=/var/lib/onlybackup /run/onlybackup-vault
+MemoryMax=512M
+TasksMax=128
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
