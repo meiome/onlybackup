@@ -32,6 +32,27 @@ make smoke
 `make smoke` avvia un ambiente HTTPS temporaneo, invia e recupera un backup,
 verifica integrità e API vietate, quindi rimuove i dati di prova.
 
+## Release verificabili
+
+Le release per Linux AMD64 sono compilate su Ubuntu 22.04 da GitHub Actions solo
+per tag nel formato `vX.Y.Z`, dopo suite, analisi statica e race detector. Sono
+destinate a sistemi Linux basati su glibc compatibili con Ubuntu 22.04; non sono
+compatibili con Alpine Linux/musl. Ogni release contiene l'archivio,
+`SHA256SUMS` e un'attestazione della provenienza della build.
+
+Dopo aver scaricato i due file della release, verificare prima di estrarre o
+eseguire:
+
+```bash
+sha256sum --check SHA256SUMS
+gh attestation verify onlybackup_VERSIONE_linux_amd64.tar.gz \
+  --repo meiome/onlybackup
+```
+
+Il checksum rileva modifiche accidentali; l'attestazione collega l'archivio al
+workflow e al commit che lo hanno prodotto. Non costituisce una garanzia che il
+programma sia privo di vulnerabilità.
+
 ## Installazione e uso
 
 Per installare i tre servizi protetti seguire
