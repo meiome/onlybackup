@@ -19,7 +19,7 @@ client → HTTPS receiver → socket Unix → writer → socket privata → vaul
 > isolamento sono disponibili; le unità systemd devono ancora essere collaudate
 > su un server dedicato reale.
 
-## Prova rapida
+## Compilazione e prova dai sorgenti
 
 Servono Linux, Go 1.27 o successivo e GCC.
 
@@ -49,15 +49,23 @@ gh attestation verify onlybackup_VERSIONE_linux_amd64.tar.gz \
   --repo meiome/onlybackup
 ```
 
+Quindi estrarre l'archivio ed entrare nella directory:
+
+```bash
+tar -xzf onlybackup_VERSIONE_linux_amd64.tar.gz
+cd onlybackup_VERSIONE_linux_amd64
+```
+
 Il checksum rileva modifiche accidentali; l'attestazione collega l'archivio al
 workflow e al commit che lo hanno prodotto. Non costituisce una garanzia che il
 programma sia privo di vulnerabilità.
 
 ## Installazione e uso
 
-Per installare i tre servizi protetti seguire
-[docs/INSTALL.md](docs/INSTALL.md). Dopo aver ricevuto dal server il file della
-credenziale e il destinatario pubblico age:
+Sia dall'archivio verificato sia dalla directory dei sorgenti, seguire
+[docs/INSTALL.md](docs/INSTALL.md) per installare e configurare i tre servizi.
+La guida comprende la creazione della credenziale di deposito e del destinatario
+pubblico age. Sul client, il file di configurazione è:
 
 ```json
 {
@@ -68,7 +76,7 @@ credenziale e il destinatario pubblico age:
 ```
 
 ```bash
-bin/onlybackup send --config client.json \
+onlybackup send --config client.json \
   --description "Backup gestionale" backup.sql
 ```
 

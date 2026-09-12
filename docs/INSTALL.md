@@ -30,7 +30,14 @@ altri accessi scrivibili concessi al writer.
 
 ## Nuova installazione
 
-Comandi indicativi per una macchina dedicata nuova, dopo `make build`:
+Eseguire i comandi dalla radice dell'archivio binario estratto, che contiene già
+`bin/`, oppure dalla radice dei sorgenti dopo:
+
+```bash
+make build
+```
+
+Su una macchina dedicata nuova:
 
 ```bash
 sudo groupadd --system onlybackup-ingest
@@ -44,6 +51,40 @@ sudo install -d -o onlybackup-vault -g onlybackup-vault-ingest -m 0700 /var/lib/
 sudo -u onlybackup-vault /usr/local/bin/onlybackup-admin --state /var/lib/onlybackup init
 sudo install -d -o root -g onlybackup-receiver -m 0750 /etc/onlybackup
 ```
+
+L'inizializzazione crea i profili predefiniti `XS`, `S`, `M`, `L` e `XL`.
+Creare una credenziale di deposito, per esempio con il profilo `M`:
+
+```bash
+sudo -u onlybackup-vault /usr/local/bin/onlybackup-admin \
+  --state /var/lib/onlybackup keys create \
+  --name client-principale --profile M \
+  --out /var/lib/onlybackup/send-client-principale.key
+```
+
+Consegnare il file `.key` al client tramite un canale sicuro e conservarlo con
+permessi 0600. Dopo averne verificato la copia, eliminare l'esemplare in chiaro
+dal server: nel catalogo resta soltanto il suo hash. Non inviarlo per e-mail o
+inserirlo in Git.
+
+Sulla macchina client fidata, dalla radice dello stesso archivio verificato o dei
+sorgenti compilati, installare il client e lo strumento di recupero:
+
+```bash
+sudo install -m 0755 bin/onlybackup bin/onlybackup-recover /usr/local/bin/
+```
+
+Generare quindi l'identità age di recupero:
+
+```bash
+onlybackup-recover keygen --out age-identity.txt > age-public.json
+chmod 0600 age-identity.txt
+```
+
+Custodire e duplicare in modo sicuro `age-identity.txt`: senza questo file i
+backup cifrati non sono recuperabili. `age-public.json` contiene il valore
+`recipient`, che può essere copiato come `encrypt_to` nella configurazione del
+client; la chiave privata non deve essere installata sui servizi di deposito.
 
 Installare un certificato TLS valido per il nome usato dai client come
 `/etc/onlybackup/server.crt`, e la relativa chiave come
@@ -67,6 +108,23 @@ di deposito può essere creata in un file nuovo nella directory dell'archivio e
 poi consegnata in modo controllato al client, che la conserva 0600. Non lasciare
 al receiver accesso ai file delle chiavi. Il comando di recupero si esegue in un
 ambiente locale autorizzato: la chiave privata age si usa soltanto quando serve.
+
+Sul client creare `client.json`, tenendo `send.key` nella stessa directory:
+
+```json
+{
+  "url": "https://backup.example.com:8443",
+  "key_file": "send.key",
+  "encrypt_to": "age1..."
+}
+```
+
+Eseguire un primo deposito e conservare la ricevuta JSON:
+
+```bash
+onlybackup send --config client.json \
+  --description "Primo backup di prova" backup.sql > receipt.json
+```
 
 ## Archivio esistente e schema SQLite
 
