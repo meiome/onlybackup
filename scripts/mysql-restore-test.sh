@@ -10,14 +10,13 @@ done
 for command in openssl curl python3; do
     command -v "$command" >/dev/null || { echo "Comando richiesto non disponibile: $command" >&2; exit 2; }
 done
-for binary in onlybackup onlybackup-admin onlybackup-vault onlybackup-writer onlybackup-receiver onlybackup-recover; do
+for binary in onlybackup onlybackup-admin onlybackup-writer onlybackup-receiver onlybackup-recover; do
     [[ -x "bin/$binary" ]] || { echo "Binario mancante: bin/$binary (eseguire make build)" >&2; exit 2; }
 done
 
 run_dir=$(mktemp -d /tmp/onlybackup-mysql-restore.XXXXXXXX)
 source_pid=
 target_pid=
-vault_pid=
 writer_pid=
 receiver_pid=
 
@@ -32,7 +31,6 @@ stop_pid() {
 cleanup() {
     stop_pid "$receiver_pid"
     stop_pid "$writer_pid"
-    stop_pid "$vault_pid"
     stop_pid "$target_pid"
     stop_pid "$source_pid"
     if [[ "${KEEP_MYSQL_RESTORE_FILES:-0}" == 1 ]]; then
@@ -158,17 +156,7 @@ cat >"$run_dir/client-encrypted.json" <<EOF
 {"url":"https://127.0.0.1:$port","key_file":"$run_dir/client.key","ca_file":"$run_dir/tls.crt","encrypt_to":"$recipient","encrypted_temp_limit_bytes":16777216,"encrypted_temp_dir":"$run_dir/encrypted-temp"}
 EOF
 
-bin/onlybackup-vault --state "$run_dir/state" --socket "$run_dir/vault.sock" \
-    --reserve-free 0 >"$run_dir/vault.log" 2>&1 &
-vault_pid=$!
-for _ in {1..200}; do
-    [[ -S "$run_dir/vault.sock" ]] && break
-    kill -0 "$vault_pid" 2>/dev/null || fail 'vault terminato durante avvio'
-    sleep 0.05
-done
-[[ -S "$run_dir/vault.sock" ]] || fail 'vault non pronto'
-
-bin/onlybackup-writer --socket "$run_dir/writer.sock" --vault-socket "$run_dir/vault.sock" \
+bin/onlybackup-writer --state "$run_dir/state" --socket "$run_dir/writer.sock" --reserve-free 0 \
     >"$run_dir/writer.log" 2>&1 &
 writer_pid=$!
 for _ in {1..200}; do
@@ -207,14 +195,11 @@ encrypted_local=$(sed -n 's/^Copia locale: //p' "$run_dir/send-encrypted.log" | 
 clear_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$run_dir/receipt-clear.json")
 encrypted_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$run_dir/receipt-encrypted.json")
 
-# Recovery is deliberately local and happens only after the receiver, writer
-# gateway and authoritative vault have stopped.
+# Recovery is deliberately local and happens only after receiver and writer stop.
 stop_pid "$receiver_pid"
 receiver_pid=
 stop_pid "$writer_pid"
 writer_pid=
-stop_pid "$vault_pid"
-vault_pid=
 stop_pid "$source_pid"
 source_pid=
 
@@ -261,4 +246,4 @@ assert encrypted["verified"] is True and encrypted["content_format"] == "age-v1"
 PY
 
 version=$(/usr/sbin/mariadbd --version | sed -n '1p')
-printf 'OK: dump reali, pipeline HTTPS-writer-vault in chiaro/cifrato, recupero locale e import MariaDB verificati.\n%s\n' "$version"
+printf 'OK: dump reali, pipeline HTTPS receiver-writer in chiaro/cifrato, recupero locale e import MariaDB verificati.\n%s\n' "$version"

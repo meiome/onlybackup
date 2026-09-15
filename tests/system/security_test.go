@@ -68,12 +68,11 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := filepath.Join(root, "archive")
-	vaultRun, writerRun := filepath.Join(root, "vault-run"), filepath.Join(root, "writer-run")
-	vaultSock, writerSock := filepath.Join(vaultRun, "vault.sock"), filepath.Join(writerRun, "writer.sock")
-	var vaultID, writerID, receiverID *syscall.Credential
+	writerRun := filepath.Join(root, "writer-run")
+	writerSock := filepath.Join(writerRun, "writer.sock")
+	var writerID, receiverID *syscall.Credential
 	if isolated {
-		vaultID = &syscall.Credential{Uid: 12001, Gid: 12003}
-		writerID = &syscall.Credential{Uid: 12002, Gid: 12004, Groups: []uint32{12003}}
+		writerID = &syscall.Credential{Uid: 12001, Gid: 12004}
 		receiverID = &syscall.Credential{Uid: 12005, Gid: 12004}
 	}
 	dir := func(path string, mode os.FileMode, owner *syscall.Credential) {
@@ -87,8 +86,7 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 			}
 		}
 	}
-	dir(state, 0700, vaultID)
-	dir(vaultRun, 0750, vaultID)
+	dir(state, 0700, writerID)
 	dir(writerRun, 0750, writerID)
 	command := func(owner *syscall.Credential, name string, args ...string) *exec.Cmd {
 		c := exec.Command(filepath.Join(bin, name), args...)
@@ -105,9 +103,9 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 		}
 		return out
 	}
-	run(vaultID, "onlybackup-admin", "--state", state, "init")
+	run(writerID, "onlybackup-admin", "--state", state, "init")
 	sendKey := filepath.Join(state, "send.key")
-	keyOut := run(vaultID, "onlybackup-admin", "--state", state, "keys", "create", "--name", "system", "--profile", "XS", "--out", sendKey)
+	keyOut := run(writerID, "onlybackup-admin", "--state", state, "keys", "create", "--name", "system", "--profile", "XS", "--out", sendKey)
 	var keyInfo struct {
 		ID string `json:"id"`
 	}
@@ -155,11 +153,7 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 		}
 		t.Fatalf("socket did not start: %s", path)
 	}
-	vault := start(vaultID, "onlybackup-vault", "--state", state, "--socket", vaultSock, "--reserve-free", "0")
-	waitSocket(vaultSock)
-	// This deliberately points at an inaccessible, nonexistent local archive.
-	// Protected mode must not read/create any writer state.
-	writer := start(writerID, "onlybackup-writer", "--state", filepath.Join(state, "forbidden-writer-state"), "--socket", writerSock, "--vault-socket", vaultSock)
+	writer := start(writerID, "onlybackup-writer", "--state", state, "--socket", writerSock, "--reserve-free", "0")
 	waitSocket(writerSock)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -258,27 +252,21 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for label, owner := range map[string]*syscall.Credential{"writer": writerID, "receiver": receiverID} {
-			probe := exec.Command(exe, "-test.run=^TestArchiveDenied$", "-test.v")
-			probe.SysProcAttr = &syscall.SysProcAttr{Credential: owner}
-			probe.Env = append(os.Environ(), "ONLYBACKUP_PROBE="+state, "ONLYBACKUP_PROBE_ID="+ids["plain"])
-			if label == "receiver" {
-				probe.Env = append(probe.Env, "ONLYBACKUP_FORBIDDEN_SOCKET="+vaultSock)
-			}
-			out, err := probe.CombinedOutput()
-			if err != nil {
-				t.Fatalf("%s isolation: %v\n%s", label, err, out)
-			}
-			t.Logf("%s cannot read, chmod, replace or delete archive/catalogue", label)
+		probe := exec.Command(exe, "-test.run=^TestArchiveDenied$", "-test.v")
+		probe.SysProcAttr = &syscall.SysProcAttr{Credential: receiverID}
+		probe.Env = append(os.Environ(), "ONLYBACKUP_PROBE="+state, "ONLYBACKUP_PROBE_ID="+ids["plain"])
+		out, err := probe.CombinedOutput()
+		if err != nil {
+			t.Fatalf("receiver isolation: %v\n%s", err, out)
 		}
+		t.Log("receiver cannot read, chmod, replace or delete archive/catalogue")
 	}
-	run(vaultID, "onlybackup-admin", "--state", state, "keys", "revoke", "--id", keyInfo.ID)
+	run(writerID, "onlybackup-admin", "--state", state, "keys", "revoke", "--id", keyInfo.ID)
 	if err := command(nil, "onlybackup", "send", "--quiet", "--url", url, "--key-file", sendKey, "--ca-file", cert, "--description", "revoked", input).Run(); err == nil {
 		t.Fatal("revoked key accepted")
 	}
 	receiver.stop(t)
 	writer.stop(t)
-	vault.stop(t)
 	// Take a cold copy, including any remaining WAL, and recover only from it.
 	copyState := filepath.Join(root, "restored-archive")
 	if err := copyTree(state, copyState); err != nil {
@@ -296,10 +284,10 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 			t.Fatal("cold restore differs")
 		}
 	}
-	// A fresh vault must reconcile the original archive without losing old data.
-	vault2 := start(vaultID, "onlybackup-vault", "--state", state, "--socket", vaultSock, "--reserve-free", "0")
-	waitSocket(vaultSock)
-	vault2.stop(t)
+	// A fresh writer must reconcile the original archive without losing old data.
+	writer2 := start(writerID, "onlybackup-writer", "--state", state, "--socket", writerSock, "--reserve-free", "0")
+	waitSocket(writerSock)
+	writer2.stop(t)
 	for _, id := range ids {
 		run(nil, "onlybackup-recover", "--state", state, "--id", id)
 	}
@@ -341,12 +329,6 @@ func TestArchiveDenied(t *testing.T) {
 	defer os.Remove(source.Name())
 	if err := os.Rename(source.Name(), file); err == nil {
 		t.Fatal("replacement permitted")
-	}
-	if socket := os.Getenv("ONLYBACKUP_FORBIDDEN_SOCKET"); socket != "" {
-		if c, err := net.DialTimeout("unix", socket, time.Second); err == nil {
-			c.Close()
-			t.Fatal("receiver reached vault socket")
-		}
 	}
 }
 

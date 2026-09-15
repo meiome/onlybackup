@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	"github.com/meiome/onlybackup/internal/model"
 	"github.com/meiome/onlybackup/internal/store"
 )
@@ -27,10 +28,54 @@ type Writer struct {
 	ReserveFree int64
 	admissions  sync.Mutex
 	slots       chan struct{}
+	createFile  func(string) (stagingFile, error)
+	linkFile    func(string, string) error
+	removeFile  func(string) error
+	syncDir     func(string) error
+	complete    func(string, time.Time) error
+}
+
+type stagingFile interface {
+	io.Writer
+	Chmod(os.FileMode) error
+	Sync() error
+	Close() error
+}
+
+// ErrBusy reports exhaustion of the writer's process-wide handler slots.
+var ErrBusy = errors.New("server occupato")
+
+// Admission is a single, already-accounted authorization to transfer one
+// backup. It may be consumed once or aborted; either path releases its slot.
+type Admission struct {
+	Backup   model.Backup
+	writer   *Writer
+	released sync.Once
+}
+
+func (u *Admission) release() {
+	u.released.Do(func() { <-u.writer.slots })
+}
+
+// Abort records an admitted transfer as failed and releases its resources.
+func (u *Admission) Abort(reason string) {
+	if u.Backup.Status == "receiving" {
+		if err := u.writer.Store.Fail(u.Backup.ID, reason); err != nil {
+			log.Printf("mark failed %s: %v", u.Backup.ID, err)
+		}
+	}
+	u.release()
 }
 
 func New(s *store.Store, root string, reserveFree int64) *Writer {
-	return &Writer{Store: s, Root: root, ReserveFree: reserveFree, slots: make(chan struct{}, 32)}
+	return &Writer{
+		Store: s, Root: root, ReserveFree: reserveFree,
+		slots: make(chan struct{}, 32),
+		createFile: func(path string) (stagingFile, error) {
+			return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		},
+		linkFile: os.Link, removeFile: os.Remove, syncDir: SyncDir, complete: s.Complete,
+	}
 }
 func SyncDir(path string) error {
 	f, err := os.Open(path)
@@ -60,13 +105,6 @@ func (a *Writer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Error(w, 400, "header duplicato")
 			return
 		}
-	}
-	select {
-	case a.slots <- struct{}{}:
-		defer func() { <-a.slots }()
-	default:
-		Error(w, 503, "server occupato")
-		return
 	}
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") || !model.ValidToken(strings.TrimPrefix(auth, "Bearer ")) {
@@ -101,29 +139,65 @@ func (a *Writer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Error(w, 400, "chiave di idempotenza non valida")
 		return
 	}
-	b, err := a.reserve(token, m, r.ContentLength, digest, idempotencyKey)
+	upload, err := a.Admit(token, m, r.ContentLength, digest, idempotencyKey, time.Now())
 	if err != nil {
-		switch {
-		case errors.Is(err, model.ErrUnauthorized):
-			Error(w, 401, err.Error())
-		case errors.Is(err, model.ErrQuota), errors.Is(err, model.ErrRate), errors.Is(err, model.ErrConcurrent):
-			Error(w, 429, err.Error())
-		case errors.Is(err, model.ErrSize):
-			Error(w, 413, err.Error())
-		case errors.Is(err, model.ErrDisk):
-			Error(w, 507, err.Error())
-		case errors.Is(err, model.ErrIdempotencyConflict), errors.Is(err, model.ErrIdempotencyInProgress):
-			Error(w, 409, err.Error())
-		default:
-			log.Printf("reservation failed: %v", err)
-			Error(w, 503, "impossibile prenotare lo spazio")
-		}
+		status, message := AdmissionError(err)
+		Error(w, status, message)
 		return
 	}
+	if upload.Backup.Status == "complete" {
+		writeReceipt(w, upload.Backup.Receipt)
+		return
+	}
+	a.Receive(w, r.Body, upload)
+}
+
+// AdmissionError maps authoritative admission failures to their public status.
+func AdmissionError(err error) (int, string) {
+	switch {
+	case errors.Is(err, model.ErrUnauthorized):
+		return http.StatusUnauthorized, err.Error()
+	case errors.Is(err, model.ErrQuota), errors.Is(err, model.ErrRate), errors.Is(err, model.ErrConcurrent):
+		return http.StatusTooManyRequests, err.Error()
+	case errors.Is(err, model.ErrSize):
+		return http.StatusRequestEntityTooLarge, err.Error()
+	case errors.Is(err, model.ErrDisk):
+		return http.StatusInsufficientStorage, err.Error()
+	case errors.Is(err, model.ErrIdempotencyConflict), errors.Is(err, model.ErrIdempotencyInProgress):
+		return http.StatusConflict, err.Error()
+	case errors.Is(err, ErrBusy):
+		return http.StatusServiceUnavailable, err.Error()
+	default:
+		log.Printf("reservation failed: %v", err)
+		return http.StatusServiceUnavailable, "impossibile prenotare lo spazio"
+	}
+}
+
+// Admit authenticates and reserves a transfer before any body bytes are read.
+// The attempt remains counted if the caller later aborts or disconnects.
+func (a *Writer) Admit(token string, m model.Metadata, size int64, digest, idempotencyKey string, now time.Time) (*Admission, error) {
+	select {
+	case a.slots <- struct{}{}:
+	default:
+		return nil, ErrBusy
+	}
+	b, err := a.reserve(token, m, size, digest, idempotencyKey, now)
+	if err != nil {
+		<-a.slots
+		return nil, err
+	}
+	upload := &Admission{Backup: b, writer: a}
 	if b.Status == "complete" {
-		writeReceipt(w, b.Receipt)
-		return
+		upload.release()
 	}
+	return upload, nil
+}
+
+// Receive consumes the body of one admitted transfer and writes its final HTTP
+// result. It is the writer's only save and finalize path.
+func (a *Writer) Receive(w http.ResponseWriter, body io.Reader, upload *Admission) {
+	b := upload.Backup
+	defer upload.release()
 	staging := filepath.Join(a.Root, "incoming", b.ID+".part")
 	final := filepath.Join(a.Root, "backups", b.ID+".backup")
 	published := false
@@ -141,9 +215,9 @@ func (a *Writer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			log.Printf("backup %s published but receipt unconfirmed; reconcile on restart", b.ID)
 		}
 	}()
-	f, err := os.OpenFile(staging, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := a.createFile(staging)
 	if err != nil {
-		Error(w, 507, "impossibile creare il file temporaneo")
+		storageError(w, "creazione del file temporaneo", err)
 		return
 	}
 	closed := false
@@ -152,13 +226,16 @@ func (a *Writer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.Close()
 		}
 	}()
-	h := sha256.New()
-	n, err := io.CopyBuffer(io.MultiWriter(f, h), io.LimitReader(r.Body, b.Size+1), make([]byte, 128<<10))
-	if err != nil || n != b.Size {
+	n, calculatedDigest, readErr, writeErr := copyAndHash(f, body, b.Size+1)
+	if writeErr != nil {
+		storageError(w, "scrittura del backup", writeErr)
+		return
+	}
+	if readErr != nil || n != b.Size {
 		Error(w, 400, "trasferimento incompleto o dimensione errata")
 		return
 	}
-	if hex.EncodeToString(h.Sum(nil)) != digest {
+	if calculatedDigest != b.SHA256 {
 		Error(w, 422, "integrità del file non verificata")
 		return
 	}
@@ -171,32 +248,32 @@ func (a *Writer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = closeErr
 	}
 	if err != nil {
-		Error(w, 507, "salvataggio del file non riuscito")
+		storageError(w, "salvataggio del backup", err)
 		return
 	}
 	// Hard link publishes without replacing any existing filename. Both directories
 	// must live on the same filesystem. No completed backup is ever removed here.
-	if err = os.Link(staging, final); err != nil {
-		Error(w, 507, "finalizzazione del backup non riuscita")
+	if err = a.linkFile(staging, final); err != nil {
+		storageError(w, "pubblicazione del backup", err)
 		return
 	}
 	published = true
-	if err = SyncDir(filepath.Dir(final)); err != nil {
+	if err = a.syncDir(filepath.Dir(final)); err != nil {
+		storageError(w, "sincronizzazione del backup pubblicato", err)
+		return
+	}
+	if err = a.removeFile(staging); err != nil {
 		Error(w, 503, "esito non confermato")
 		return
 	}
-	if err = os.Remove(staging); err != nil {
-		Error(w, 503, "esito non confermato")
-		return
-	}
-	if err = SyncDir(filepath.Dir(staging)); err != nil {
-		Error(w, 503, "esito non confermato")
+	if err = a.syncDir(filepath.Dir(staging)); err != nil {
+		storageError(w, "sincronizzazione dei temporanei", err)
 		return
 	}
 	now := time.Now().UTC()
-	if err = a.Store.Complete(b.ID, now); err != nil {
+	if err = a.complete(b.ID, now); err != nil {
 		log.Printf("complete %s: %v", b.ID, err)
-		Error(w, 503, "esito non confermato")
+		storageError(w, "persistenza del catalogo", err)
 		return
 	}
 	success = true
@@ -204,41 +281,80 @@ func (a *Writer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b.ReceivedAt = now.Format(time.RFC3339Nano)
 	writeReceipt(w, b.Receipt)
 }
+
+func copyAndHash(dst io.Writer, src io.Reader, limit int64) (int64, string, error, error) {
+	h := sha256.New()
+	lr := &io.LimitedReader{R: src, N: limit}
+	buf := make([]byte, 128<<10)
+	var total int64
+	for lr.N > 0 {
+		n, readErr := lr.Read(buf)
+		if n > 0 {
+			written, writeErr := dst.Write(buf[:n])
+			if written > 0 {
+				_, _ = h.Write(buf[:written])
+				total += int64(written)
+			}
+			if writeErr != nil {
+				return total, hex.EncodeToString(h.Sum(nil)), nil, writeErr
+			}
+			if written != n {
+				return total, hex.EncodeToString(h.Sum(nil)), nil, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return total, hex.EncodeToString(h.Sum(nil)), nil, nil
+			}
+			return total, hex.EncodeToString(h.Sum(nil)), readErr, nil
+		}
+		if n == 0 {
+			return total, hex.EncodeToString(h.Sum(nil)), io.ErrNoProgress, nil
+		}
+	}
+	return total, hex.EncodeToString(h.Sum(nil)), nil, nil
+}
+
+func storageError(w http.ResponseWriter, operation string, err error) {
+	status := http.StatusServiceUnavailable
+	message := "esito non confermato: " + operation + " non riuscita"
+	var sqliteErr sqlite3.Error
+	if errors.Is(err, syscall.ENOSPC) || (errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrFull) {
+		status = http.StatusInsufficientStorage
+		message = "spazio disco esaurito durante " + operation
+	}
+	Error(w, status, message)
+}
 func writeReceipt(w http.ResponseWriter, receipt model.Receipt) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(receipt)
 }
-func (a *Writer) reserve(token string, m model.Metadata, size int64, digest, idempotencyKey string) (model.Backup, error) {
+func (a *Writer) reserve(token string, m model.Metadata, size int64, digest, idempotencyKey string, now time.Time) (model.Backup, error) {
 	a.admissions.Lock()
 	defer a.admissions.Unlock()
-	// First authenticate/reserve transactionally; free-space checks then include
-	// this upload and all other outstanding reservations (conservative accounting).
-	b, err := a.Store.ReserveIdempotent(token, m, size, digest, idempotencyKey, time.Now())
-	if err != nil {
-		return b, err
-	}
-	if b.Status == "complete" {
-		return b, nil
-	}
+	return a.Store.ReserveIdempotentChecked(token, m, size, digest, idempotencyKey, now, a.checkDisk)
+}
+
+func (a *Writer) checkDisk(reservedBytes int64) error {
 	var fs syscall.Statfs_t
-	err = syscall.Statfs(filepath.Join(a.Root, "backups"), &fs)
-	if err != nil {
-		a.Store.Fail(b.ID, "spazio disco non verificabile")
-		return model.Backup{}, err
+	if err := syscall.Statfs(filepath.Join(a.Root, "backups"), &fs); err != nil {
+		return err
 	}
-	pending, err := a.Store.ReservedBytes()
-	if err != nil {
-		a.Store.Fail(b.ID, "prenotazioni non verificabili")
-		return model.Backup{}, err
+	if fs.Bsize <= 0 || reservedBytes < 0 || a.ReserveFree < 0 {
+		return errors.New("contabilita spazio disco non valida")
 	}
-	free := uint64(fs.Bavail) * uint64(fs.Bsize)
-	if free < uint64(a.ReserveFree) || uint64(pending) > free-uint64(a.ReserveFree) {
-		a.Store.Fail(b.ID, "spazio disco insufficiente")
-		return model.Backup{}, model.ErrDisk
+	blockSize := uint64(fs.Bsize)
+	if fs.Bavail > ^uint64(0)/blockSize {
+		return errors.New("spazio disco non rappresentabile")
 	}
-	return b, nil
+	free := fs.Bavail * blockSize
+	reserveFree := uint64(a.ReserveFree)
+	if free < reserveFree || uint64(reservedBytes) > free-reserveFree {
+		return model.ErrDisk
+	}
+	return nil
 }
 
 // Reconcile must run only while holding the exclusive writer lock, before listening.

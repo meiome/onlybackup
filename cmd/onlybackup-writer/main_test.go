@@ -43,7 +43,7 @@ func TestWriterProcessHelper(t *testing.T) {
 }
 
 func TestWriterSIGTERMWaitsForAdmittedUpload(t *testing.T) {
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "state")
 	if err := store.Init(root); err != nil {
 		t.Fatal(err)
 	}

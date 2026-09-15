@@ -1,7 +1,7 @@
 GO := ./scripts/go.sh
-BINS := onlybackup onlybackup-admin onlybackup-writer onlybackup-receiver onlybackup-vault onlybackup-recover onlybackup-inspect
+BINS := onlybackup onlybackup-admin onlybackup-writer onlybackup-receiver onlybackup-recover onlybackup-inspect
 
-.PHONY: build test race vet check fmt smoke system-test isolation-test mysql-test
+.PHONY: build test race vet vuln check fmt smoke system-test isolation-test mysql-test
 build:
 	@mkdir -p bin
 	@for name in $(BINS); do $(GO) build -buildvcs=false -trimpath -o bin/$$name ./cmd/$$name || exit; done
@@ -15,7 +15,10 @@ race:
 vet:
 	$(GO) vet ./...
 
-check: test vet
+vuln:
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+check: test vet vuln
 
 fmt:
 	$(GO) fmt ./...

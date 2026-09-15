@@ -1,17 +1,15 @@
 [Unit]
 Description=OnlyBackup isolated upload writer
-Requires=onlybackup-vault.service
-After=local-fs.target onlybackup-vault.service
+After=local-fs.target
 
 [Service]
 Type=simple
 User=onlybackup-writer
 Group=onlybackup-ingest
-SupplementaryGroups=onlybackup-vault-ingest
 UMask=0077
 RuntimeDirectory=onlybackup
 RuntimeDirectoryMode=0750
-ExecStart=/usr/local/bin/onlybackup-writer --socket /run/onlybackup/writer.sock --vault-socket /run/onlybackup-vault/vault.sock
+ExecStart=/usr/local/bin/onlybackup-writer --state /var/lib/onlybackup --socket /run/onlybackup/writer.sock --reserve-free 1GiB
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=25
@@ -31,8 +29,7 @@ RestrictSUIDSGID=yes
 RestrictNamespaces=yes
 RestrictAddressFamilies=AF_UNIX
 LockPersonality=yes
-InaccessiblePaths=/var/lib/onlybackup
-ReadWritePaths=/run/onlybackup
+ReadWritePaths=/var/lib/onlybackup /run/onlybackup
 MemoryMax=1G
 TasksMax=128
 LimitNOFILE=4096

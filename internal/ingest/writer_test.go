@@ -2,15 +2,18 @@ package ingest
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -18,9 +21,28 @@ import (
 	"github.com/meiome/onlybackup/internal/store"
 )
 
+type failingStagingFile struct {
+	stagingFile
+	err error
+}
+
+func (f failingStagingFile) Write([]byte) (int, error) { return 0, f.err }
+
+type blockingSyncFile struct {
+	stagingFile
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (f blockingSyncFile) Sync() error {
+	close(f.entered)
+	<-f.release
+	return f.stagingFile.Sync()
+}
+
 func fixture(t *testing.T) (*Writer, string, string) {
 	t.Helper()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "state")
 	if err := store.Init(root); err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +221,9 @@ func TestInvalidUploadsNeverComplete(t *testing.T) {
 			if q.Used != 0 || q.Reserved != 0 {
 				t.Fatal(q)
 			}
+			if kind == "disk" && q.Attempts24h != 0 {
+				t.Fatalf("disk rejection consumed an upload attempt: %+v", q)
+			}
 		})
 	}
 }
@@ -284,5 +309,198 @@ func TestReadFailureReleasesReservation(t *testing.T) {
 	q, _ := a.Store.Quota(key, time.Now())
 	if q.Reserved != 0 || q.Active != 0 {
 		t.Fatal(q)
+	}
+}
+
+func TestIncompleteAdmittedUploadNeverSucceeds(t *testing.T) {
+	a, key, token := fixture(t)
+	data := []byte("backup incompleto")
+	r := request(token, data)
+	upload, err := a.Admit(token, model.Metadata{Description: "esportazione database", OriginalName: "database.EXE"}, int64(len(data)), r.Header.Get(model.DigestHeader), r.Header.Get(model.IdempotencyHeader), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	a.Receive(w, bytes.NewReader(data[:len(data)-1]), upload)
+	if w.Code == http.StatusCreated {
+		t.Fatalf("upload incompleto confermato: %s", w.Body.String())
+	}
+	q, err := a.Store.Quota(key, time.Now())
+	if err != nil || q.Active != 0 || q.Reserved != 0 || q.Attempts24h != 1 {
+		t.Fatalf("risorse dopo upload incompleto: %+v %v", q, err)
+	}
+}
+
+func TestDiskFullDuringCopyReturns507AndCleansReservation(t *testing.T) {
+	a, key, token := fixture(t)
+	originalCreate := a.createFile
+	a.createFile = func(path string) (stagingFile, error) {
+		file, err := originalCreate(path)
+		if err != nil {
+			return nil, err
+		}
+		return failingStagingFile{stagingFile: file, err: syscall.ENOSPC}, nil
+	}
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, request(token, []byte("contenuto")))
+	if w.Code != http.StatusInsufficientStorage || !strings.Contains(w.Body.String(), "spazio disco esaurito durante scrittura") {
+		t.Fatalf("errore copia: %d %s", w.Code, w.Body.String())
+	}
+	q, err := a.Store.Quota(key, time.Now())
+	if err != nil || q.Active != 0 || q.Reserved != 0 || q.Attempts24h != 1 {
+		t.Fatalf("risorse dopo disco pieno: %+v %v", q, err)
+	}
+	if files, _ := os.ReadDir(filepath.Join(a.Root, "incoming")); len(files) != 0 {
+		t.Fatalf("temporaneo non rimosso: %v", files)
+	}
+}
+
+func TestFinalPathCollisionPreservesExistingFile(t *testing.T) {
+	a, key, token := fixture(t)
+	data := []byte("nuovo backup")
+	digest := sha256.Sum256(data)
+	upload, err := a.Admit(token, model.Metadata{Description: "collisione", OriginalName: "db.sql"}, int64(len(data)), hex.EncodeToString(digest[:]), "obi_collision_1234567890", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := filepath.Join(a.Root, "backups", upload.Backup.ID+".backup")
+	existing := []byte("contenuto preesistente intatto")
+	if err = os.WriteFile(final, existing, 0400); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	a.Receive(w, bytes.NewReader(data), upload)
+	if w.Code < 400 || w.Code == http.StatusCreated {
+		t.Fatalf("collisione accettata: %d %s", w.Code, w.Body.String())
+	}
+	got, err := os.ReadFile(final)
+	if err != nil || !bytes.Equal(got, existing) {
+		t.Fatalf("file preesistente modificato: %q %v", got, err)
+	}
+	q, err := a.Store.Quota(key, time.Now())
+	if err != nil || q.Active != 0 || q.Reserved != 0 || q.Attempts24h != 1 {
+		t.Fatalf("risorse dopo collisione: %+v %v", q, err)
+	}
+}
+
+func TestDiskFullDuringFinalizationReturns507(t *testing.T) {
+	a, key, token := fixture(t)
+	a.linkFile = func(string, string) error { return syscall.ENOSPC }
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, request(token, []byte("contenuto")))
+	if w.Code != http.StatusInsufficientStorage || !strings.Contains(w.Body.String(), "spazio disco esaurito durante pubblicazione") {
+		t.Fatalf("errore finalizzazione: %d %s", w.Code, w.Body.String())
+	}
+	q, err := a.Store.Quota(key, time.Now())
+	if err != nil || q.Active != 0 || q.Reserved != 0 || q.Attempts24h != 1 {
+		t.Fatalf("risorse dopo finalizzazione fallita: %+v %v", q, err)
+	}
+}
+
+func TestPublishedBackupSurvivesCatalogueFailure(t *testing.T) {
+	a, _, token := fixture(t)
+	a.complete = func(string, time.Time) error { return syscall.ENOSPC }
+	data := []byte("pubblicato prima del catalogo")
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, request(token, data))
+	if w.Code != http.StatusInsufficientStorage || !strings.Contains(w.Body.String(), "persistenza del catalogo") {
+		t.Fatalf("errore catalogo: %d %s", w.Code, w.Body.String())
+	}
+	pending, err := a.Store.Pending()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("record pending: %+v %v", pending, err)
+	}
+	final := filepath.Join(a.Root, "backups", pending[0].ID+".backup")
+	got, err := os.ReadFile(final)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("backup pubblicato perso: %q %v", got, err)
+	}
+	a.complete = a.Store.Complete
+	if err = a.Reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := a.Store.Backup(pending[0].ID)
+	if err != nil || stored.Status != "complete" {
+		t.Fatalf("riconciliazione: %+v %v", stored, err)
+	}
+}
+
+func TestCompleteBodyFinalizesAfterRequestCancellation(t *testing.T) {
+	a, _, token := fixture(t)
+	data := []byte("corpo già ricevuto")
+	r := request(token, data)
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel()
+	r = r.WithContext(ctx)
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("finalizzazione cancellata col contesto HTTP: %d %s", w.Code, w.Body.String())
+	}
+	var receipt model.Receipt
+	if err := json.Unmarshal(w.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(a.Root, "backups", receipt.ID+".backup"))
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("backup non finalizzato: %q %v", got, err)
+	}
+}
+
+func TestClientDisconnectAfterVerificationStillFinalizes(t *testing.T) {
+	a, _, token := fixture(t)
+	data := []byte("corpo verificato prima della disconnessione")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	originalCreate := a.createFile
+	a.createFile = func(path string) (stagingFile, error) {
+		file, err := originalCreate(path)
+		if err != nil {
+			return nil, err
+		}
+		return blockingSyncFile{stagingFile: file, entered: entered, release: release}, nil
+	}
+	server := httptest.NewServer(a)
+	defer server.Close()
+	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := request(token, data)
+	r.URL.Scheme = "http"
+	r.URL.Host = server.Listener.Addr().String()
+	r.Host = server.Listener.Addr().String()
+	r.RequestURI = ""
+	writeDone := make(chan error, 1)
+	go func() { writeDone <- r.Write(conn) }()
+	select {
+	case err = <-writeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("invio del corpo bloccato")
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("writer non ha verificato il corpo")
+	}
+	_ = conn.Close()
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for {
+		backups, listErr := a.Store.Backups("", 10)
+		if listErr == nil && len(backups) == 1 && backups[0].Status == "complete" {
+			got, readErr := os.ReadFile(filepath.Join(a.Root, "backups", backups[0].ID+".backup"))
+			if readErr != nil || !bytes.Equal(got, data) {
+				t.Fatalf("backup finalizzato: %q %v", got, readErr)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("finalizzazione non completata dopo la disconnessione: %v %v", backups, listErr)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

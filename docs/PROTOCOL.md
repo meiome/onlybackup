@@ -34,15 +34,22 @@ I metadati non possono contenere proprietà aggiuntive o JSON concatenati.
 Il corpo è il contenuto grezzo, senza multipart, estrazione, conversione o decompressione.
 `Content-Encoding` non è accettato. Il nome originale è persistito solo nel database.
 
-I dati transitano nel receiver in streaming, senza copia su disco o accesso all'archivio.
-In modalità protetta il writer inoltra al vault tramite il [protocollo privato](VAULT-PROTOCOL.md).
-Il vault ripete validazione e autorizzazione, applica le quote dal proprio catalogo
-e calcola l'hash ricevuto. In modalità locale tali operazioni restano nel writer.
+I dati transitano nel receiver in streaming, senza copia su disco o accesso
+all'archivio. Il writer autentica, applica quote e limiti dal catalogo, prenota
+spazio e calcola l'hash. Queste decisioni e il replay di un deposito completo
+avvengono prima che il writer inizi a leggere il corpo.
 Le risposte non espongono percorso fisico, credenziale o contenuto del backup.
+
+Se un rifiuto, un replay completo o un errore finale arriva mentre il corpo non è
+ancora terminato, writer e receiver interrompono la lettura pendente prima di
+consegnare la risposta. Per HTTP/1.1 la connessione interessata non viene riusata:
+questo permette anche a un client che ha inviato solo gli header di ricevere subito
+l'esito, senza attendere il timeout dell'upload. Una richiesta ammessa che viene
+interrotta libera spazio prenotato e concorrenza, ma conserva il tentativo contato.
 
 Con cifratura attiva il corpo è il file age e non il testo originale; quote, lunghezza
 e hash attestano quel corpo. Il formato dichiarato non garantisce che il contenuto sia
-decifrabile: il vault non possiede la chiave privata. Nome e descrizione rimangono
+decifrabile: il writer non possiede la chiave privata. Nome e descrizione rimangono
 metadati in chiaro nel catalogo. Solo il recupero con identità age può verificare
 l'autenticazione crittografica e restituire il contenuto decifrato.
 
@@ -83,15 +90,23 @@ Gli errori hanno forma `{"error":"messaggio"}`:
 Una disconnessione o un errore prima della ricevuta non dimostra l'assenza del backup.
 Il client ufficiale genera una chiave di idempotenza casuale per ogni operazione e,
 in caso di errore di rete o risposta temporaneamente non disponibile, ripete al massimo
-due volte lo stesso invio. Il vault associa la chiave alla credenziale, ai metadati,
+due volte lo stesso invio. Il writer associa la chiave alla credenziale, ai metadati,
 alla dimensione e allo SHA-256: se il deposito è già completo restituisce la ricevuta
 originale senza creare un altro backup. Un riuso della chiave con dati diversi viene
 rifiutato. I client precedenti sul percorso v1 possono omettere l'header e conservano
 il comportamento precedente: ogni richiesta riuscita crea un deposito distinto.
 
+Il limite `uploads_per_day` conta ogni trasferimento ammesso nella finestra mobile
+delle ultime 24 ore, anche quando il trasferimento viene interrotto, fallisce o
+ritenta una chiave di idempotenza già fallita. I rifiuti precedenti all'ammissione
+non consumano un tentativo. Il replay di un deposito già completo restituisce la
+ricevuta originale senza trasferimento, spazio o nuovo tentativo.
+Le righe dei tentativi fuori dalla finestra vengono eliminate alla successiva
+ammissione della stessa chiave.
+
 ## Transazione logica
 
-1. Validazione e prenotazione atomica nel DB: stato `receiving`.
+1. Validazione e prenotazione atomica nel DB: stato `receiving` e registrazione del tentativo.
 2. Creazione esclusiva di `incoming/<ID>.part`; copia con verifica della dimensione.
 3. Verifica SHA-256, permessi 0400, sincronizzazione e chiusura del file.
 4. Hard link a `backups/<ID>.backup` senza sostituzione, sincronizzazione della directory.

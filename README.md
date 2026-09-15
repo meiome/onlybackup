@@ -6,13 +6,12 @@ cancellarli.
 
 Il trasferimento usa HTTPS con TLS 1.3. Normalmente il client cifra il contenuto
 con [age](https://age-encryption.org/) prima dell'invio; il salvataggio in chiaro
-deve essere scelto esplicitamente. Receiver, writer e vault possono essere
-eseguiti con utenti Linux separati, così solo il vault accede all'archivio.
+deve essere scelto esplicitamente. Receiver e writer sono eseguiti con utenti
+Linux separati, così il receiver pubblico non accede all'archivio.
 
 ```text
-client → HTTPS receiver → socket Unix → writer → socket privata → vault
-                                                               ├─ file .backup
-                                                               └─ SQLite
+client → HTTPS receiver → socket Unix → writer ─┬─ file .backup
+                                                └─ SQLite
 ```
 
 > **Stato:** progetto in sviluppo. Suite, race detector, test di sistema e
@@ -63,7 +62,7 @@ programma sia privo di vulnerabilità.
 ## Installazione e uso
 
 Sia dall'archivio verificato sia dalla directory dei sorgenti, seguire
-[docs/INSTALL.md](docs/INSTALL.md) per installare e configurare i tre servizi.
+[docs/INSTALL.md](docs/INSTALL.md) per installare e configurare i due servizi.
 La guida comprende la creazione della credenziale di deposito e del destinatario
 pubblico age. Sul client, il file di configurazione è:
 
@@ -90,7 +89,6 @@ OnlyBackup riceve file già preparati; per MySQL è disponibile
 - [Installazione protetta](docs/INSTALL.md)
 - [Modello di sicurezza](docs/SECURITY.md)
 - [Protocollo pubblico](docs/PROTOCOL.md)
-- [Protocollo privato del vault](docs/VAULT-PROTOCOL.md)
 - [Prove di ripristino](docs/RESTORE-TEST.md)
 
 Distribuito con licenza [GNU AGPL-3.0](LICENSE).

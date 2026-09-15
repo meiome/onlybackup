@@ -2,8 +2,8 @@
 
 `scripts/mysql-restore-test.sh` verifica il percorso completo con MariaDB reale:
 crea dati e relazioni noti, produce due dump tramite `scripts/backup-mysql.sh`, li
-deposita via HTTPS in chiaro e con cifratura age attraversando receiver, writer
-gateway e vault autorevole, arresta tutti e tre i processi, recupera entrambi i
+deposita via HTTPS in chiaro e con cifratura age attraversando receiver e writer,
+arresta entrambi i processi, recupera entrambi i
 contenuti localmente e li importa in un secondo database temporaneo. Confronta i
 dati, i caratteri UTF-8, gli importi aggregati e il vincolo esterno.
 
@@ -22,10 +22,9 @@ da un wrapper temporaneo con un unico `--defaults-file` che indica esclusivament
 la socket sorgente. La prova non legge socket, credenziali o database MariaDB
 dell'host.
 
-Vault e writer girano con lo stesso utente del test. Questo verifica il percorso
-funzionale completo e la proprietà autorevole del catalogo da parte del vault;
-la separazione effettiva degli UID e il rifiuto delle operazioni del writer
-sull'archivio richiedono la prova di isolamento dedicata.
+Receiver e writer girano con lo stesso utente nel test MariaDB. La separazione
+effettiva degli UID e il rifiuto delle operazioni del receiver sull'archivio
+richiedono la prova di isolamento dedicata.
 
 Il trap arresta soltanto i PID avviati dallo script e rimuove soltanto la propria
 directory `/tmp/onlybackup-mysql-restore.*`. Impostando

@@ -1,62 +1,54 @@
 # Installazione su Linux dedicato
 
-Le unità systemd fornite usano la modalità protetta con tre utenti distinti.
-Non sono state installate o abilitate sulla macchina di sviluppo. Il collaudo
-Docker prova i permessi Unix reali; l'avvio systemd sul server di destinazione
-resta da verificare. Non è implementata immutabilità WORM contro root o vault
-compromessi: vedere [SECURITY](SECURITY.md).
+Le unità systemd fornite eseguono due processi con utenti distinti:
+
+```text
+client → receiver HTTPS → writer su socket Unix → archivio e catalogo
+```
+
+Il collaudo Docker prova i permessi Unix reali; l'avvio systemd sul server di
+destinazione resta da verificare. I permessi proteggono l'archivio dal receiver,
+ma non implementano immutabilità WORM contro root o contro il writer, che deve
+poter creare file e aggiornare il catalogo. Vedere [SECURITY](SECURITY.md).
 
 ## Utenti e percorsi
 
 | Componente | Utente | Gruppo primario | Gruppi supplementari |
 |---|---|---|---|
-| Vault | onlybackup-vault | onlybackup-vault-ingest | nessuno |
-| Writer | onlybackup-writer | onlybackup-ingest | onlybackup-vault-ingest |
+| Writer | onlybackup-writer | onlybackup-ingest | nessuno |
 | Receiver | onlybackup-receiver | onlybackup-ingest | onlybackup-receiver (TLS) |
 
-Solo il vault possiede `/var/lib/onlybackup` (0700), `incoming`, `backups` e
-`metadata.db`. Il writer non possiede un catalogo separato da cui il recupero
-possa dipendere. Quote, chiavi e contenuti sono verificati dal vault.
+Il writer possiede `/var/lib/onlybackup` con modo 0700 e accede a `incoming`,
+`backups` e `metadata.db`. Il receiver può aprire soltanto la socket del writer.
 
-- `/run/onlybackup-vault`: vault:onlybackup-vault-ingest, 0750; socket 0660.
-- `/run/onlybackup`: writer:onlybackup-ingest, 0750; socket writer 0660.
+- `/run/onlybackup`: writer:onlybackup-ingest, 0750; socket 0660.
 - `/etc/onlybackup`: root:onlybackup-receiver, 0750; chiave TLS 0640.
-- Chiave privata age: custodita separatamente, mai necessaria ai tre servizi.
+- chiave privata age: custodita separatamente, mai necessaria ai servizi.
 
-I gruppi delle due socket devono essere distinti: il receiver non deve poter
-raggiungere direttamente il vault. Directory di socket e lock non devono essere
-scrivibili dai rispettivi client. Non condividere l'archivio tramite SMB/NFS o
-altri accessi scrivibili concessi al writer.
+La directory della socket e il relativo lock non devono essere scrivibili dal
+receiver. Non concedere al receiver ACL o gruppi che permettano di attraversare
+la directory dell'archivio.
 
 ## Nuova installazione
 
-Eseguire i comandi dalla radice dell'archivio binario estratto, che contiene già
-`bin/`, oppure dalla radice dei sorgenti dopo:
-
-```bash
-make build
-```
-
-Su una macchina dedicata nuova:
+Eseguire dalla radice dell'archivio binario estratto, oppure dai sorgenti dopo
+`make build`:
 
 ```bash
 sudo groupadd --system onlybackup-ingest
-sudo groupadd --system onlybackup-vault-ingest
 sudo groupadd --system onlybackup-receiver
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid onlybackup-vault-ingest onlybackup-vault
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid onlybackup-ingest --groups onlybackup-vault-ingest onlybackup-writer
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid onlybackup-ingest onlybackup-writer
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin --gid onlybackup-ingest --groups onlybackup-receiver onlybackup-receiver
-sudo install -m 0755 bin/onlybackup bin/onlybackup-admin bin/onlybackup-inspect bin/onlybackup-recover bin/onlybackup-receiver bin/onlybackup-writer bin/onlybackup-vault /usr/local/bin/
-sudo install -d -o onlybackup-vault -g onlybackup-vault-ingest -m 0700 /var/lib/onlybackup
-sudo -u onlybackup-vault /usr/local/bin/onlybackup-admin --state /var/lib/onlybackup init
+sudo install -m 0755 bin/onlybackup bin/onlybackup-admin bin/onlybackup-inspect bin/onlybackup-recover bin/onlybackup-receiver bin/onlybackup-writer /usr/local/bin/
+sudo install -d -o onlybackup-writer -g onlybackup-ingest -m 0700 /var/lib/onlybackup
+sudo -u onlybackup-writer /usr/local/bin/onlybackup-admin --state /var/lib/onlybackup init
 sudo install -d -o root -g onlybackup-receiver -m 0750 /etc/onlybackup
 ```
 
-L'inizializzazione crea i profili predefiniti `XS`, `S`, `M`, `L` e `XL`.
 Creare una credenziale di deposito, per esempio con il profilo `M`:
 
 ```bash
-sudo -u onlybackup-vault /usr/local/bin/onlybackup-admin \
+sudo -u onlybackup-writer /usr/local/bin/onlybackup-admin \
   --state /var/lib/onlybackup keys create \
   --name client-principale --profile M \
   --out /var/lib/onlybackup/send-client-principale.key
@@ -64,50 +56,35 @@ sudo -u onlybackup-vault /usr/local/bin/onlybackup-admin \
 
 Consegnare il file `.key` al client tramite un canale sicuro e conservarlo con
 permessi 0600. Dopo averne verificato la copia, eliminare l'esemplare in chiaro
-dal server: nel catalogo resta soltanto il suo hash. Non inviarlo per e-mail o
-inserirlo in Git.
+dal server: nel catalogo resta soltanto il suo hash. Non lasciarlo accessibile al
+receiver.
 
-Sulla macchina client fidata, dalla radice dello stesso archivio verificato o dei
-sorgenti compilati, installare il client e lo strumento di recupero:
-
-```bash
-sudo install -m 0755 bin/onlybackup bin/onlybackup-recover /usr/local/bin/
-```
-
-Generare quindi l'identità age di recupero:
+Sul client installare `onlybackup` e `onlybackup-recover`, quindi creare e
+custodire separatamente l'identità age:
 
 ```bash
 onlybackup-recover keygen --out age-identity.txt > age-public.json
 chmod 0600 age-identity.txt
 ```
 
-Custodire e duplicare in modo sicuro `age-identity.txt`: senza questo file i
-backup cifrati non sono recuperabili. `age-public.json` contiene il valore
-`recipient`, che può essere copiato come `encrypt_to` nella configurazione del
-client; la chiave privata non deve essere installata sui servizi di deposito.
+Senza `age-identity.txt` i backup cifrati non sono recuperabili. Il valore
+`recipient` di `age-public.json` va copiato come `encrypt_to` nella configurazione
+client; la chiave privata non va installata sul server di deposito.
 
-Installare un certificato TLS valido per il nome usato dai client come
-`/etc/onlybackup/server.crt`, e la relativa chiave come
-`/etc/onlybackup/server.key`, proprietà root:onlybackup-receiver e permessi 0640.
-La unità del receiver include esplicitamente il gruppo TLS supplementare.
+Installare certificato e chiave TLS come `/etc/onlybackup/server.crt` e
+`/etc/onlybackup/server.key`, proprietà root:onlybackup-receiver, con chiave 0640.
+Poi installare e avviare le unità:
 
 ```bash
-sudo install -m 0644 deploy/onlybackup-vault.service deploy/onlybackup-writer.service deploy/onlybackup-receiver.service /etc/systemd/system/
+sudo install -m 0644 deploy/onlybackup-writer.service deploy/onlybackup-receiver.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now onlybackup-vault.service onlybackup-writer.service onlybackup-receiver.service
+sudo systemctl enable --now onlybackup-writer.service onlybackup-receiver.service
 ```
 
-Systemd crea le directory runtime. Il receiver ascolta sulla porta 8443: predisporre
-firewall e rinnovo dei certificati. Writer e vault hanno `PrivateNetwork=yes` e
-`RestrictAddressFamilies=AF_UNIX`; il receiver può raggiungere soltanto la socket
-writer, con archivio e runtime vault inaccessibili. Il writer usa `--vault-socket`
-e non apre lo stato locale; `--state` non gli assegna accesso in tale modalità.
-
-Amministrare profili e credenziali localmente come vault o root. Una nuova chiave
-di deposito può essere creata in un file nuovo nella directory dell'archivio e
-poi consegnata in modo controllato al client, che la conserva 0600. Non lasciare
-al receiver accesso ai file delle chiavi. Il comando di recupero si esegue in un
-ambiente locale autorizzato: la chiave privata age si usa soltanto quando serve.
+Systemd crea `/run/onlybackup`. Il writer ha `PrivateNetwork=yes` e accede in
+scrittura allo stato; il receiver espone HTTPS sulla porta 8443, accede alla
+socket Unix e ha `/var/lib/onlybackup` dichiarata inaccessibile. Predisporre
+firewall e rinnovo del certificato.
 
 Sul client creare `client.json`, tenendo `send.key` nella stessa directory:
 
@@ -126,43 +103,54 @@ onlybackup send --config client.json \
   --description "Primo backup di prova" backup.sql > receipt.json
 ```
 
-## Archivio esistente e schema SQLite
+## Migrazione da una versione con vault
 
-I nuovi binari leggono cataloghi v1, v2 e v3 in sola lettura. La prima apertura in
-scrittura aggiorna alla v3 con una transazione: per la v1 aggiunge `content_format`,
-lasciando i vecchi record in chiaro, e per v1/v2 aggiunge la chiave di idempotenza.
-Aggiornare tutti i comandi prima di riaprire uno schema v3 con binari precedenti.
+La rimozione del processo `onlybackup-vault` non cambia il formato dei backup né
+il percorso dello stato. Pianificare la migrazione con una finestra di arresto:
 
-Per un archivio esistente procedere con servizi arrestati, copia a freddo
-verificata dell'intero stato (anche eventuali `metadata.db-wal` e `metadata.db-shm`)
-e prova dei nuovi binari sulla copia. Per il passaggio alla modalità protetta,
-assegnare lo stato al nuovo utente vault e rimuovere accessi/ACL del vecchio writer;
-controllare anche i genitori delle directory. Questa modifica dei permessi non
-viene eseguita automaticamente dal programma. Non attivare contemporaneamente
-vault e writer locale sullo stesso stato: il lock condiviso lo impedisce.
+1. arrestare receiver, writer e il vecchio vault;
+2. eseguire e verificare una copia a freddo dell'intera directory di stato,
+   inclusi eventuali `metadata.db-wal` e `metadata.db-shm`;
+3. installare insieme tutti i nuovi binari e le due nuove unità;
+4. assegnare ricorsivamente lo stato a `onlybackup-writer:onlybackup-ingest`,
+   mantenendo directory 0700, database 0600 e backup 0400;
+5. rimuovere ACL e gruppi che davano accesso ai vecchi componenti, disabilitare
+   `onlybackup-vault.service`, quindi avviare writer e receiver;
+6. verificare un replay idempotente, un nuovo deposito e un recupero dalla copia.
 
-I file preesistenti non vengono ricifrati. Per un ritorno ai vecchi binari serve
-lo stato v1 salvato prima dell'aggiornamento; non esiste una migrazione inversa
-automatica. Una copia storica non contiene i depositi ricevuti dopo la copia:
-conservarli separatamente e verificare il recupero prima di un eventuale ritorno.
+Non avviare vecchio vault e nuovo writer sullo stesso archivio. Il lock
+`writer.lock` impedisce l'uso simultaneo ai binari compatibili, ma non sostituisce
+la procedura di arresto e la verifica dei processi.
+
+## Schema SQLite e archivio esistente
+
+I nuovi binari leggono cataloghi v1, v2, v3 e v4 in sola lettura. La prima
+apertura in scrittura aggiorna alla v4 con transazioni: aggiunge progressivamente
+`content_format`, la chiave di idempotenza e lo storico dei tentativi necessario
+alla finestra mobile di 24 ore. Le righe scadute possono essere eliminate alla
+successiva ammissione della stessa chiave.
+La migrazione v3-v4 importa una volta il solo tentativo ricostruibile da
+`backups.started_at`; i ritenti più vecchi già sovrascritti non sono ricostruibili.
+
+I file preesistenti non vengono modificati o ricifrati. Non riaprire uno schema
+v4 con vecchi binari. Per tornare indietro serve la copia completa precedente
+alla migrazione; non esiste una migrazione inversa automatica.
 
 ## Collaudo e copia di sicurezza
 
 Verificare sul server dedicato:
 
-- avvio dei tre servizi e invio HTTPS con certificato verificato;
-- writer e receiver incapaci di leggere, chmod, rinominare, sostituire o eliminare
-  i contenuti e il catalogo; receiver incapace di aprire la socket vault;
-- invii oltre quota e disco quasi pieno, arresti durante upload e riconciliazione;
-- recupero in chiaro/cifrato e ripristino del catalogo da copie indipendenti.
+- avvio dei due servizi e invio HTTPS con certificato verificato;
+- receiver incapace di leggere, modificare, rinominare o eliminare archivio e catalogo;
+- invii oltre quota, disco quasi pieno, arresti durante upload e riconciliazione;
+- recupero in chiaro e cifrato da una copia indipendente.
 
-Per una copia consistente a freddo arrestare receiver, writer e vault (e non
-eseguire comandi amministrativi durante la copia), copiare l'intera directory
-dello stato su un'altra destinazione e riavviare i servizi. Verificare il recupero
-dalla copia; custodire separatamente le chiavi private age. Il test automatico
-`make system-test` esegue questo ciclo su archivi temporanei.
+Per una copia consistente a freddo arrestare receiver e writer, non eseguire
+comandi amministrativi durante la copia, copiare l'intero stato e poi riavviare.
+Il test `make system-test` esegue questo ciclo su archivi temporanei.
 
 Il limite di arresto ordinato applicativo è 15 secondi, seguito da interruzione
-delle connessioni e attesa degli handler. Systemd concede 25 secondi: un blocco
-I/O oltre tale tempo può portare a SIGKILL e richiedere riconciliazione al riavvio.
-Nessuna ricevuta persa deve essere interpretata come prova di mancato deposito.
+delle connessioni e attesa degli handler. Systemd concede 25 secondi. Un blocco
+I/O oltre tale tempo può portare a SIGKILL e richiedere riconciliazione al
+riavvio. L'assenza della ricevuta non prova che il deposito sia assente: ripetere
+la stessa operazione con la stessa chiave di idempotenza.

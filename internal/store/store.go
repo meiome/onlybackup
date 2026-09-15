@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -41,7 +42,14 @@ CREATE TABLE IF NOT EXISTS backups (
 CREATE INDEX IF NOT EXISTS backups_key_state ON backups(key_id,status);
 CREATE INDEX IF NOT EXISTS backups_key_time ON backups(key_id,started_at);
 CREATE UNIQUE INDEX IF NOT EXISTS backups_key_idempotency ON backups(key_id,idempotency_key) WHERE idempotency_key IS NOT NULL;
-PRAGMA user_version=3;
+CREATE TABLE IF NOT EXISTS upload_attempts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ key_id TEXT NOT NULL REFERENCES keys(id),
+ backup_id TEXT NOT NULL REFERENCES backups(id),
+ attempted_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS upload_attempts_key_time ON upload_attempts(key_id,attempted_at);
+PRAGMA user_version=4;
 `
 
 func Open(path string, readonly bool) (*Store, error) {
@@ -117,7 +125,40 @@ func Open(path string, readonly bool) (*Store, error) {
 		}
 		version = 3
 	}
-	if version != 1 && version != 2 && version != 3 {
+	if version == 3 && !readonly {
+		tx, txErr := db.Begin()
+		if txErr == nil {
+			_, txErr = tx.Exec(`CREATE TABLE upload_attempts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ key_id TEXT NOT NULL REFERENCES keys(id),
+ backup_id TEXT NOT NULL REFERENCES backups(id),
+ attempted_at INTEGER NOT NULL
+)`)
+		}
+		if txErr == nil {
+			_, txErr = tx.Exec("CREATE INDEX upload_attempts_key_time ON upload_attempts(key_id,attempted_at)")
+		}
+		if txErr == nil {
+			// Schema v3 retained only the most recent started_at for a failed
+			// idempotent retry. Import the one historical attempt that can be
+			// reconstructed for every backup without inventing lost history.
+			_, txErr = tx.Exec("INSERT INTO upload_attempts(key_id,backup_id,attempted_at) SELECT key_id,id,started_at FROM backups")
+		}
+		if txErr == nil {
+			_, txErr = tx.Exec("PRAGMA user_version=4")
+		}
+		if txErr == nil {
+			txErr = tx.Commit()
+		} else if tx != nil {
+			_ = tx.Rollback()
+		}
+		if txErr != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrazione schema database: %w", txErr)
+		}
+		version = 4
+	}
+	if version != 1 && version != 2 && version != 3 && version != 4 {
 		db.Close()
 		return nil, errors.New("schema database non supportato; eseguire init per un nuovo archivio")
 	}
@@ -127,10 +168,16 @@ func Init(root string) error {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return err
 	}
+	if err := validatePrivateDirectory(root); err != nil {
+		return err
+	}
 	for _, d := range []string{"incoming", "backups"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0700); err != nil {
 			return err
 		}
+	}
+	if err := ValidateState(root); err != nil {
+		return err
 	}
 	path := filepath.Join(root, "metadata.db")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
@@ -163,6 +210,35 @@ func Init(root string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// ValidateState rejects archive directories which could be traversed or
+// modified by another local user. It deliberately reports unsafe existing
+// permissions instead of changing them behind the operator's back.
+func ValidateState(root string) error {
+	for _, path := range []string{root, filepath.Join(root, "incoming"), filepath.Join(root, "backups")} {
+		if err := validatePrivateDirectory(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePrivateDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("directory archivio non valida o simbolica: %s", path)
+	}
+	if info.Mode().Perm() != 0700 {
+		return fmt.Errorf("directory archivio con permessi non sicuri (richiesto chmod 700): %s", path)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int64(stat.Uid) != int64(os.Geteuid()) {
+		return fmt.Errorf("directory archivio non appartenente all'utente corrente: %s", path)
+	}
+	return nil
 }
 func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) PutProfile(p model.Profile) error {
@@ -249,6 +325,14 @@ func (s *Store) Reserve(token string, m model.Metadata, size int64, digest strin
 // ReserveIdempotent restituisce la ricevuta esistente per una richiesta già
 // completata e impedisce che la stessa operazione crei più backup.
 func (s *Store) ReserveIdempotent(token string, m model.Metadata, size int64, digest, idempotencyKey string, now time.Time) (model.Backup, error) {
+	return s.ReserveIdempotentChecked(token, m, size, digest, idempotencyKey, now, nil)
+}
+
+// ReserveIdempotentChecked runs check inside the same immediate transaction
+// which creates the reservation. reservedBytes includes every active upload
+// and the candidate request, so their state cannot change between the check
+// and the catalogue commit.
+func (s *Store) ReserveIdempotentChecked(token string, m model.Metadata, size int64, digest, idempotencyKey string, now time.Time, check func(reservedBytes int64) error) (model.Backup, error) {
 	var b model.Backup
 	if !model.ValidToken(token) {
 		return b, model.ErrUnauthorized
@@ -276,9 +360,6 @@ func (s *Store) ReserveIdempotent(token string, m model.Metadata, size int64, di
 	if err != nil {
 		return b, err
 	}
-	if size > p.MaxBackupBytes {
-		return b, model.ErrSize
-	}
 	existingID := ""
 	if idempotencyKey != "" {
 		row := tx.QueryRow(`SELECT id,status,size_bytes,sha256,received_at,key_id,description,original_name,content_format,started_at,failure,idempotency_key FROM backups WHERE key_id=? AND idempotency_key=?`, keyID, idempotencyKey)
@@ -301,8 +382,14 @@ func (s *Store) ReserveIdempotent(token string, m model.Metadata, size int64, di
 			return b, lookupErr
 		}
 	}
+	if size > p.MaxBackupBytes {
+		return b, model.ErrSize
+	}
 	var used, active, attempts int64
-	err = tx.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status IN ('receiving','complete') THEN size_bytes ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='receiving' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN started_at>=? THEN 1 ELSE 0 END),0) FROM backups WHERE key_id=? AND id<>?`, now.Add(-24*time.Hour).Unix(), keyID, existingID).Scan(&used, &active, &attempts)
+	err = tx.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status IN ('receiving','complete') THEN size_bytes ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='receiving' THEN 1 ELSE 0 END),0) FROM backups WHERE key_id=?`, keyID).Scan(&used, &active)
+	if err == nil {
+		err = tx.QueryRow("SELECT COUNT(*) FROM upload_attempts WHERE key_id=? AND attempted_at>=?", keyID, now.Add(-24*time.Hour).Unix()).Scan(&attempts)
+	}
 	if err != nil {
 		return b, err
 	}
@@ -314,6 +401,18 @@ func (s *Store) ReserveIdempotent(token string, m model.Metadata, size int64, di
 	}
 	if attempts >= p.UploadsPerDay {
 		return b, model.ErrRate
+	}
+	if check != nil {
+		var reserved int64
+		if err = tx.QueryRow("SELECT COALESCE(SUM(size_bytes),0) FROM backups WHERE status='receiving'").Scan(&reserved); err != nil {
+			return b, err
+		}
+		if reserved < 0 || size > int64(^uint64(0)>>1)-reserved {
+			return b, errors.New("prenotazioni disco non valide")
+		}
+		if err = check(reserved + size); err != nil {
+			return b, err
+		}
 	}
 	id := existingID
 	if id == "" {
@@ -330,6 +429,14 @@ func (s *Store) ReserveIdempotent(token string, m model.Metadata, size int64, di
 		_, err = tx.Exec(`UPDATE backups SET status='receiving',started_at=?,received_at='',failure='' WHERE id=? AND status='failed'`, now.Unix(), id)
 	}
 	if err != nil {
+		return b, err
+	}
+	// Only the rolling 24-hour window is observable and used for admission.
+	// Reclaim older rows for active keys before adding the new attempt.
+	if _, err = tx.Exec("DELETE FROM upload_attempts WHERE key_id=? AND attempted_at<?", keyID, now.Add(-24*time.Hour).Unix()); err != nil {
+		return b, err
+	}
+	if _, err = tx.Exec("INSERT INTO upload_attempts(key_id,backup_id,attempted_at) VALUES(?,?,?)", keyID, id, now.Unix()); err != nil {
 		return b, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -401,6 +508,16 @@ func (s *Store) Quota(keyID string, now time.Time) (model.Quota, error) {
 	if err != nil {
 		return q, err
 	}
-	err = s.db.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status='complete' THEN size_bytes ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='receiving' THEN size_bytes ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='receiving' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN started_at>=? THEN 1 ELSE 0 END),0) FROM backups WHERE key_id=?`, now.Add(-24*time.Hour).Unix(), keyID).Scan(&q.Used, &q.Reserved, &q.Active, &q.Attempts24h)
+	err = s.db.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status='complete' THEN size_bytes ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='receiving' THEN size_bytes ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='receiving' THEN 1 ELSE 0 END),0) FROM backups WHERE key_id=?`, keyID).Scan(&q.Used, &q.Reserved, &q.Active)
+	if err != nil {
+		return q, err
+	}
+	if s.schemaVersion < 4 {
+		// Read-only v1-v3 catalogues cannot be migrated. Their best available
+		// history is the latest started_at stored on each backup.
+		err = s.db.QueryRow("SELECT COUNT(*) FROM backups WHERE key_id=? AND started_at>=?", keyID, now.Add(-24*time.Hour).Unix()).Scan(&q.Attempts24h)
+	} else {
+		err = s.db.QueryRow("SELECT COUNT(*) FROM upload_attempts WHERE key_id=? AND attempted_at>=?", keyID, now.Add(-24*time.Hour).Unix()).Scan(&q.Attempts24h)
+	}
 	return q, err
 }
