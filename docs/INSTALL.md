@@ -103,6 +103,48 @@ onlybackup send --config client.json \
   --description "Primo backup di prova" backup.sql > receipt.json
 ```
 
+## Reinstallazione pulita di un ambiente di prova
+
+Usare questa procedura soltanto quando lo stato esistente non contiene backup,
+profili o credenziali da conservare. I comandi sono limitati ai servizi e ai
+percorsi di OnlyBackup; non richiedono il riavvio della macchina.
+
+Fermare le vecchie unità e disabilitare l'eventuale vault:
+
+```bash
+sudo systemctl disable --now onlybackup-receiver.service onlybackup-writer.service
+sudo systemctl disable --now onlybackup-vault.service 2>/dev/null || true
+```
+
+Eliminare lo stato sacrificabile e i soli componenti non più distribuiti:
+
+```bash
+sudo rm -rf -- /var/lib/onlybackup
+sudo rm -f -- /etc/systemd/system/onlybackup-vault.service
+sudo rm -f -- /usr/local/bin/onlybackup-vault
+sudo systemctl daemon-reload
+```
+
+Installare insieme i binari e le due unità della nuova versione seguendo la
+sezione "Nuova installazione", quindi inizializzare `/var/lib/onlybackup` come
+`onlybackup-writer:onlybackup-ingest`. Gli utenti e i gruppi correnti possono
+essere riutilizzati; l'eventuale appartenenza del writer al vecchio gruppo vault
+va rimossa:
+
+```bash
+sudo gpasswd --delete onlybackup-writer onlybackup-vault-ingest 2>/dev/null || true
+```
+
+Il certificato TLS in `/etc/onlybackup` può essere mantenuto se è ancora valido.
+Creare invece un nuovo profilo e una nuova credenziale di deposito: le
+credenziali precedenti non appartengono al catalogo appena inizializzato. Dopo
+aver aggiornato il client, avviare e verificare i due servizi:
+
+```bash
+sudo systemctl enable --now onlybackup-writer.service onlybackup-receiver.service
+sudo systemctl status onlybackup-writer.service onlybackup-receiver.service --no-pager
+```
+
 ## Migrazione da una versione con vault
 
 La rimozione del processo `onlybackup-vault` non cambia il formato dei backup né
