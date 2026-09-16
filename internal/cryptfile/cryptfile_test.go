@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/meiome/onlybackup/internal/filesecurity"
 )
 
 func writeFile(t *testing.T, path string, data []byte, mode os.FileMode) {
@@ -62,8 +64,10 @@ func TestEncryptRecoverRoundTripAndRawExport(t *testing.T) {
 	if err != nil || !bytes.Equal(got, plaintext) {
 		t.Fatal("decrypted output mismatch", err)
 	}
-	if info, err := os.Stat(recovered); err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("recovered permissions: %v %v", info, err)
+	if info, err := os.Stat(recovered); err != nil {
+		t.Fatalf("recovered stat: %v", err)
+	} else if err = filesecurity.CheckPrivate(recovered, info); err != nil {
+		t.Fatalf("recovered permissions: %v", err)
 	}
 	raw := filepath.Join(dir, "raw.age")
 	if err = Recover(context.Background(), cipherPath, raw, int64(len(ciphertext)), digest(ciphertext), ""); err != nil {
@@ -148,24 +152,17 @@ func TestEncryptionLimitDiskErrorsAndIdentityPermissions(t *testing.T) {
 	if _, err = EncryptToTemp(context.Background(), source, recipient, filepath.Join(dir, "absent"), 2<<20); err == nil {
 		t.Fatal("missing temporary directory accepted")
 	}
-	if err = os.Chmod(identity, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = ReadIdentities(identity); err == nil {
-		t.Fatal("permissive identity file accepted")
-	}
-	if err = os.Chmod(identity, 0600); err != nil {
-		t.Fatal(err)
-	}
+	testInsecureIdentityPermissions(t, identity)
 	link := filepath.Join(dir, "identity-link")
 	if err = os.Symlink(identity, link); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = ReadIdentities(link); err == nil {
-		t.Fatal("identity symlink accepted")
-	}
-	if err = Verify(context.Background(), link, 1, digest([]byte("x"))); err == nil {
-		t.Fatal("archive symlink accepted")
+		t.Logf("test symlink non disponibile: %v", err)
+	} else {
+		if _, err = ReadIdentities(link); err == nil {
+			t.Fatal("identity symlink accepted")
+		}
+		if err = Verify(context.Background(), link, 1, digest([]byte("x"))); err == nil {
+			t.Fatal("archive symlink accepted")
+		}
 	}
 	if err = Verify(context.Background(), source, maxArchivedBytes+1, digest([]byte("x"))); err == nil {
 		t.Fatal("oversized expected archive accepted")

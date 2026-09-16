@@ -66,6 +66,13 @@ esplicito il client fallisce prima della connessione. La chiave privata, generat
 con `onlybackup-recover keygen`, non è richiesta ai servizi e va custodita e
 provata separatamente.
 
+Il client rifiuta chiavi di deposito e identità age con permessi troppo ampi.
+Su Linux richiede che gruppo e altri non abbiano accesso; i file creati dal
+programma sono limitati a 0600. Su Windows verifica il proprietario corrente e
+accetta nella DACL soltanto l'utente, LocalSystem e Administrators; i file
+creati dal programma ricevono una DACL protetta equivalente. Questa verifica
+non sostituisce la cifratura del disco né protegge da un amministratore locale.
+
 Il recupero verifica il cifrato su una copia temporanea, poi decifra e pubblica
 un file nuovo solo a verifica conclusa. Le dipendenze sono fissate con checksum
 nel modulo Go; questo non equivale a un audit indipendente.
@@ -78,10 +85,13 @@ nel modulo Go; questo non equivale a un audit indipendente.
 - `make system-test`: due processi, cifratura/chiaro, revoca, riavvio e copia a freddo.
 - `make isolation-test`: utenti Linux distinti in un contenitore senza rete; il receiver tenta realmente di leggere e alterare l'archivio.
 - `make mysql-test`: dump e import MariaDB temporanei; dettagli in [RESTORE-TEST](RESTORE-TEST.md).
+- `.github/workflows/client-windows.yml`: test di client, ACL, cifratura e
+  recupero su Windows Server 2022, più compilazione degli eseguibili AMD64.
 
 La prova Docker verifica i permessi del filesystem Linux, non l'avvio delle unità
 systemd né storage WORM. Non dimostra resistenza a root, guasti fisici reali o
-recuperabilità di ogni backup futuro.
+recuperabilità di ogni backup futuro. La prova Windows non copre tutte le
+versioni desktop, i filesystem non NTFS o le policy aziendali locali.
 
 ## Compatibilità
 

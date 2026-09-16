@@ -31,13 +31,25 @@ make smoke
 `make smoke` avvia un ambiente HTTPS temporaneo, invia e recupera un backup,
 verifica integrità e API vietate, quindi rimuove i dati di prova.
 
+Per produrre localmente i due client Windows AMD64 in `bin/windows-amd64`:
+
+```bash
+make windows-client
+```
+
 ## Release verificabili
 
-Le release per Linux AMD64 sono compilate su Ubuntu 22.04 da GitHub Actions solo
-per tag nel formato `vX.Y.Z`, dopo suite, analisi statica e race detector. Sono
-destinate a sistemi Linux basati su glibc compatibili con Ubuntu 22.04; non sono
-compatibili con Alpine Linux/musl. Ogni release contiene l'archivio,
-`SHA256SUMS` e un'attestazione della provenienza della build.
+Le release sono create da GitHub Actions soltanto per tag nel formato `vX.Y.Z`,
+dopo suite, analisi statica e race detector. Il pacchetto server Linux AMD64 è
+compilato su Ubuntu 22.04 ed è destinato a sistemi glibc compatibili; non è
+compatibile con Alpine Linux/musl. Il pacchetto client Windows AMD64 contiene
+gli eseguibili nativi `onlybackup.exe` e `onlybackup-recover.exe`, provati anche
+su un runner Windows Server 2022. Ogni archivio ha un checksum in `SHA256SUMS` e
+un'attestazione della provenienza della build.
+
+La release `v0.1.0` precede il supporto Windows e contiene soltanto il pacchetto
+Linux. Il pacchetto ZIP sarà disponibile dalla prima release successiva che
+include queste modifiche.
 
 Dopo aver scaricato i due file della release, verificare prima di estrarre o
 eseguire:
@@ -47,6 +59,10 @@ sha256sum --check SHA256SUMS
 gh attestation verify onlybackup_VERSIONE_linux_amd64.tar.gz \
   --repo meiome/onlybackup
 ```
+
+Per Windows verificare nello stesso modo
+`onlybackup_VERSIONE_windows_amd64.zip`; i comandi PowerShell completi sono nella
+[guida del client Windows](docs/CLIENT-WINDOWS.md).
 
 Quindi estrarre l'archivio ed entrare nella directory:
 
@@ -61,11 +77,11 @@ programma sia privo di vulnerabilità.
 
 ## Installazione e uso
 
-Sia dall'archivio verificato sia dalla directory dei sorgenti, seguire
-[docs/INSTALL-DEBIAN.md](docs/INSTALL-DEBIAN.md) per una procedura passo passo su
-Debian 13, oppure [docs/INSTALL.md](docs/INSTALL.md) per migrazioni e altri
-sistemi Linux. Le guide comprendono la creazione della credenziale di deposito
-e del destinatario pubblico age. Sul client, il file di configurazione è:
+Per il server seguire [docs/INSTALL-DEBIAN.md](docs/INSTALL-DEBIAN.md) su Debian
+13 oppure [docs/INSTALL.md](docs/INSTALL.md) per migrazioni e altri sistemi
+Linux. Per i PC che inviano backup sono disponibili guide distinte per
+[Debian](docs/CLIENT-DEBIAN.md) e [Windows nativo](docs/CLIENT-WINDOWS.md), con
+automazione Bash e PowerShell. Sul client, il file di configurazione è:
 
 ```json
 {
@@ -88,6 +104,8 @@ OnlyBackup riceve file già preparati; per MySQL è disponibile
 ## Documentazione
 
 - [Installazione passo passo su Debian 13](docs/INSTALL-DEBIAN.md)
+- [Client Debian](docs/CLIENT-DEBIAN.md)
+- [Client Windows nativo](docs/CLIENT-WINDOWS.md)
 - [Installazione protetta](docs/INSTALL.md)
 - [Modello di sicurezza](docs/SECURITY.md)
 - [Protocollo pubblico](docs/PROTOCOL.md)

@@ -1,10 +1,15 @@
 GO := ./scripts/go.sh
 BINS := onlybackup onlybackup-admin onlybackup-writer onlybackup-receiver onlybackup-recover onlybackup-inspect
 
-.PHONY: build test race vet vuln check fmt smoke system-test isolation-test mysql-test
+.PHONY: build windows-client test race vet vuln check fmt smoke system-test isolation-test mysql-test
 build:
 	@mkdir -p bin
 	@for name in $(BINS); do $(GO) build -buildvcs=false -trimpath -o bin/$$name ./cmd/$$name || exit; done
+
+windows-client:
+	@mkdir -p bin/windows-amd64
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -buildvcs=false -trimpath -o bin/windows-amd64/onlybackup.exe ./cmd/onlybackup
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -buildvcs=false -trimpath -o bin/windows-amd64/onlybackup-recover.exe ./cmd/onlybackup-recover
 
 test:
 	$(GO) test ./...

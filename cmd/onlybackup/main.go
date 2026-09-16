@@ -13,12 +13,46 @@ import (
 	"syscall"
 
 	"github.com/meiome/onlybackup/internal/client"
+	"github.com/meiome/onlybackup/internal/filesecurity"
 	"github.com/meiome/onlybackup/internal/model"
 )
 
+func writeReceipt(path string, receipt model.Receipt) (err error) {
+	encoded, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		return err
+	}
+	encoded = append(encoded, '\n')
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	keep := false
+	defer func() {
+		_ = file.Close()
+		if !keep {
+			_ = os.Remove(path)
+		}
+	}()
+	if err = filesecurity.RestrictPrivate(path); err != nil {
+		return err
+	}
+	if _, err = file.Write(encoded); err != nil {
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	keep = true
+	return nil
+}
+
 func run() error {
 	if len(os.Args) < 2 || os.Args[1] == "--help" || os.Args[1] == "-h" {
-		fmt.Fprintln(os.Stderr, "Uso: onlybackup send [--config client.json] [--url https://host:8443 --key-file chiave] [--encrypt-to age1... | --plaintext] [--encrypted-temp-limit DIMENSIONE --encrypted-temp-dir DIR] --description TESTO [--name NOME] FILE\nLa cifratura richiede un destinatario age. L'invio in chiaro richiede --plaintext esplicito. Solo file gia pronti. Nessuna operazione di download, elenco o cancellazione.")
+		fmt.Fprintln(os.Stderr, "Uso: onlybackup send [--config client.json] [--url https://host:8443 --key-file chiave] [--encrypt-to age1... | --plaintext] [--encrypted-temp-limit DIMENSIONE --encrypted-temp-dir DIR] --description TESTO [--name NOME] [--receipt FILE_NUOVO] FILE\nLa cifratura richiede un destinatario age. L'invio in chiaro richiede --plaintext esplicito. Solo file gia pronti. Nessuna operazione di download, elenco o cancellazione.")
 		return nil
 	}
 	if os.Args[1] != "send" {
@@ -36,6 +70,7 @@ func run() error {
 	description := f.String("description", "", "descrizione obbligatoria, massimo 1000 caratteri")
 	label := f.String("label", "", "alias di --description")
 	name := f.String("name", "", "nome originale, ricavato dal file se omesso")
+	receiptPath := f.String("receipt", "", "salva la ricevuta in un file nuovo senza sovrascrivere")
 	quiet := f.Bool("quiet", false, "non mostrare avanzamento su stderr")
 	if err := f.Parse(os.Args[2:]); err != nil {
 		return err
@@ -113,6 +148,11 @@ func run() error {
 	receipt, err := client.Send(ctx, o, f.Arg(0), model.Metadata{Description: *description, OriginalName: *name}, progress)
 	if err != nil {
 		return err
+	}
+	if *receiptPath != "" {
+		if err = writeReceipt(*receiptPath, receipt); err != nil {
+			return fmt.Errorf("salvataggio ricevuta: %w", err)
+		}
 	}
 	e := json.NewEncoder(os.Stdout)
 	e.SetIndent("", "  ")

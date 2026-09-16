@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
+	"github.com/meiome/onlybackup/internal/filesecurity"
 )
 
 const (
@@ -154,8 +155,8 @@ func ReadIdentities(path string) ([]age.Identity, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode().Perm()&0077 != 0 {
-		return nil, errors.New("il file identita deve essere accessibile solo al proprietario (chmod 600)")
+	if err = filesecurity.CheckPrivate(path, info); err != nil {
+		return nil, fmt.Errorf("file identita non sicuro: %w", err)
 	}
 	if info.Size() > maxIdentityBytes {
 		return nil, errors.New("file identita troppo grande")
@@ -210,6 +211,9 @@ func GenerateIdentity(path string) (recipient string, err error) {
 			_ = os.Remove(path)
 		}
 	}()
+	if err = filesecurity.RestrictPrivate(path); err != nil {
+		return "", err
+	}
 	if _, err = fmt.Fprintf(f, "# created by onlybackup-recover\n%s\n", identity.String()); err != nil {
 		return "", err
 	}
@@ -254,6 +258,9 @@ func Recover(ctx context.Context, sourcePath, outputPath string, expectedSize in
 		_ = verified.Close()
 		_ = os.Remove(verifiedPath)
 	}()
+	if err = filesecurity.RestrictPrivate(verifiedPath); err != nil {
+		return err
+	}
 	source, err := OpenRegular(sourcePath)
 	if err != nil {
 		return err
@@ -292,6 +299,9 @@ func Recover(ctx context.Context, sourcePath, outputPath string, expectedSize in
 		_ = plain.Close()
 		_ = os.Remove(plainPath)
 	}()
+	if err = filesecurity.RestrictPrivate(plainPath); err != nil {
+		return err
+	}
 	decrypted, err := age.Decrypt(verified, identities...)
 	if err != nil {
 		return fmt.Errorf("decifratura age: %w", err)
@@ -332,13 +342,4 @@ func publish(stagedPath, outputPath string) error {
 		return fmt.Errorf("output pubblicato ma sincronizzazione directory fallita: %w", err)
 	}
 	return nil
-}
-
-func syncDir(path string) error {
-	d, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
 }

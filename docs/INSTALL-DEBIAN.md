@@ -270,6 +270,9 @@ modificata da OnlyBackup.
 
 ## 9. Preparare il client
 
+Le procedure complete, compresi automazione e recupero, sono separate per
+[client Debian](CLIENT-DEBIAN.md) e [client Windows nativo](CLIENT-WINDOWS.md).
+
 Sul PC fidato installare almeno `onlybackup` e `onlybackup-recover` dalla stessa
 release. Generare l'identità age una sola volta:
 

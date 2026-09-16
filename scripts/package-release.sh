@@ -34,9 +34,9 @@ for name in onlybackup onlybackup-admin onlybackup-inspect onlybackup-receiver o
 done
 
 cp README.md LICENSE "$stage/"
-cp docs/INSTALL-DEBIAN.md docs/INSTALL.md docs/PROTOCOL.md docs/RESTORE-TEST.md docs/SECURITY.md "$stage/docs/"
+cp docs/CLIENT-DEBIAN.md docs/CLIENT-WINDOWS.md docs/INSTALL-DEBIAN.md docs/INSTALL.md docs/PROTOCOL.md docs/RESTORE-TEST.md docs/SECURITY.md "$stage/docs/"
 cp deploy/onlybackup-receiver.service deploy/onlybackup-writer.service "$stage/deploy/"
-cp scripts/backup-mysql.sh "$stage/scripts/"
+cp scripts/backup-file.sh scripts/backup-mysql.sh "$stage/scripts/"
 
 source_date_epoch=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}
 tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owner \

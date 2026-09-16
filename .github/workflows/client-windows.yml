@@ -1,0 +1,63 @@
+name: Client Windows
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Windows AMD64
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Scarica il sorgente
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configura Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test client e recupero
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+        run: >-
+          go test
+          ./internal/filesecurity
+          ./internal/client
+          ./internal/cryptfile
+          ./cmd/onlybackup
+          ./cmd/onlybackup-recover
+
+      - name: Controlla lo script PowerShell
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/backup-file.ps1),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+
+      - name: Compila gli eseguibili
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -buildvcs=false -trimpath -o onlybackup.exe ./cmd/onlybackup
+          go build -buildvcs=false -trimpath -o onlybackup-recover.exe ./cmd/onlybackup-recover

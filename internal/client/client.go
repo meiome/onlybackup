@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/meiome/onlybackup/internal/cryptfile"
+	"github.com/meiome/onlybackup/internal/filesecurity"
 	"github.com/meiome/onlybackup/internal/model"
 )
 
@@ -42,8 +43,11 @@ func ReadSecret(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
-		return "", errors.New("il file della chiave deve essere regolare e accessibile solo al proprietario (chmod 600)")
+	if !info.Mode().IsRegular() {
+		return "", errors.New("il file della chiave deve essere regolare")
+	}
+	if err = filesecurity.CheckPrivate(path, info); err != nil {
+		return "", fmt.Errorf("file della chiave non sicuro: %w", err)
 	}
 	b, err := io.ReadAll(io.LimitReader(f, 257))
 	if err != nil {

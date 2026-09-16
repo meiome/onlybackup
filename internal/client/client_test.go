@@ -20,6 +20,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/meiome/onlybackup/internal/cryptfile"
+	"github.com/meiome/onlybackup/internal/filesecurity"
 	"github.com/meiome/onlybackup/internal/model"
 )
 
@@ -74,6 +75,9 @@ func clientFixture(t *testing.T) (source, key string, plaintext []byte) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(key, []byte("deposit-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := filesecurity.RestrictPrivate(key); err != nil {
 		t.Fatal(err)
 	}
 	return source, key, plaintext
@@ -138,6 +142,9 @@ func TestReadSecretRejectsSymlink(t *testing.T) {
 	target := filepath.Join(dir, "real.key")
 	link := filepath.Join(dir, "linked.key")
 	if err := os.WriteFile(target, []byte("deposit-token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := filesecurity.RestrictPrivate(target); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, link); err != nil {
