@@ -15,8 +15,8 @@ client → HTTPS receiver → socket Unix → writer ─┬─ file .backup
 ```
 
 > **Stato:** progetto in sviluppo. Suite, race detector, test di sistema e
-> isolamento sono disponibili; le unità systemd devono ancora essere collaudate
-> su un server dedicato reale.
+> isolamento sono disponibili; le unità systemd della release `v0.1.0` sono
+> state collaudate su un server Debian 13 AMD64 dedicato.
 
 ## Compilazione e prova dai sorgenti
 
@@ -62,9 +62,10 @@ programma sia privo di vulnerabilità.
 ## Installazione e uso
 
 Sia dall'archivio verificato sia dalla directory dei sorgenti, seguire
-[docs/INSTALL.md](docs/INSTALL.md) per installare e configurare i due servizi.
-La guida comprende la creazione della credenziale di deposito e del destinatario
-pubblico age. Sul client, il file di configurazione è:
+[docs/INSTALL-DEBIAN.md](docs/INSTALL-DEBIAN.md) per una procedura passo passo su
+Debian 13, oppure [docs/INSTALL.md](docs/INSTALL.md) per migrazioni e altri
+sistemi Linux. Le guide comprendono la creazione della credenziale di deposito
+e del destinatario pubblico age. Sul client, il file di configurazione è:
 
 ```json
 {
@@ -86,6 +87,7 @@ OnlyBackup riceve file già preparati; per MySQL è disponibile
 
 ## Documentazione
 
+- [Installazione passo passo su Debian 13](docs/INSTALL-DEBIAN.md)
 - [Installazione protetta](docs/INSTALL.md)
 - [Modello di sicurezza](docs/SECURITY.md)
 - [Protocollo pubblico](docs/PROTOCOL.md)

@@ -1,5 +1,9 @@
 # Installazione su Linux dedicato
 
+Per un'installazione nuova, collaudata e descritta passo passo su Debian 13
+AMD64, seguire [INSTALL-DEBIAN.md](INSTALL-DEBIAN.md). Questo documento rimane
+il riferimento per architettura, reinstallazione e migrazione di dati esistenti.
+
 Le unità systemd fornite eseguono due processi con utenti distinti:
 
 ```text
