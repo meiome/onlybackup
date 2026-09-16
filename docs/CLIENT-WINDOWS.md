@@ -88,9 +88,10 @@ Copy-Item .\send-production.key "$configDir\send-production.key"
 Copy-Item .\server.crt "$configDir\server.crt"
 ```
 
-Il client rifiuta credenziali con proprietario diverso dall'utente corrente o
-ACL che concedono accesso ad altri account. Dopo la copia verificata, eliminare
-l'esemplare consegnabile della credenziale dal server.
+Il client accetta come proprietari soltanto l'utente corrente, LocalSystem o gli
+Administrators locali e rifiuta ACL che concedono accesso ad altri account.
+Dopo la copia verificata, eliminare l'esemplare consegnabile della credenziale
+dal server.
 
 ## 4. Creare o importare l'identità age
 

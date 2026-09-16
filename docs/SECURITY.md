@@ -68,10 +68,10 @@ provata separatamente.
 
 Il client rifiuta chiavi di deposito e identità age con permessi troppo ampi.
 Su Linux richiede che gruppo e altri non abbiano accesso; i file creati dal
-programma sono limitati a 0600. Su Windows verifica il proprietario corrente e
-accetta nella DACL soltanto l'utente, LocalSystem e Administrators; i file
-creati dal programma ricevono una DACL protetta equivalente. Questa verifica
-non sostituisce la cifratura del disco né protegge da un amministratore locale.
+programma sono limitati a 0600. Su Windows accetta come proprietari e nella DACL
+soltanto l'utente corrente, LocalSystem e Administrators; i file creati dal
+programma ricevono una DACL protetta equivalente. Questa verifica non
+sostituisce la cifratura del disco né protegge da un amministratore locale.
 
 Il recupero verifica il cifrato su una copia temporanea, poi decifra e pubblica
 un file nuovo solo a verifica conclusa. Le dipendenze sono fissate con checksum

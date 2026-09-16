@@ -11,8 +11,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// CheckPrivate accepts only files owned by the current user whose DACL grants
-// access exclusively to that user, LocalSystem and local Administrators.
+// CheckPrivate accepts only files owned by the current user, LocalSystem or
+// local Administrators whose DACL grants access exclusively to the same trusted
+// principals.
 // Windows reports synthetic POSIX mode bits, so chmod-style checks are not
 // meaningful there.
 func CheckPrivate(path string, _ os.FileInfo) error {
@@ -32,8 +33,8 @@ func CheckPrivate(path string, _ os.FileInfo) error {
 	if err != nil || owner == nil {
 		return errors.New("proprietario Windows non verificabile")
 	}
-	if !owner.Equals(userSID) {
-		return errors.New("il file privato non appartiene all'utente corrente")
+	if !owner.IsValid() || !isTrustedSID(owner, userSID, systemSID, adminSID) {
+		return errors.New("il proprietario del file privato non e un account Windows fidato")
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
@@ -58,7 +59,7 @@ func CheckPrivate(path string, _ os.FileInfo) error {
 			if !sid.IsValid() {
 				return errors.New("SID non valido nella DACL Windows")
 			}
-			if !sid.Equals(userSID) && !sid.Equals(systemSID) && !sid.Equals(adminSID) && ace.Mask != 0 {
+			if !isTrustedSID(sid, userSID, systemSID, adminSID) && ace.Mask != 0 {
 				return fmt.Errorf("ACL Windows concede accesso a un account non autorizzato: %s", sid.String())
 			}
 		default:
@@ -66,6 +67,18 @@ func CheckPrivate(path string, _ os.FileInfo) error {
 		}
 	}
 	return nil
+}
+
+func isTrustedSID(candidate *windows.SID, trusted ...*windows.SID) bool {
+	if candidate == nil {
+		return false
+	}
+	for _, sid := range trusted {
+		if sid != nil && candidate.Equals(sid) {
+			return true
+		}
+	}
+	return false
 }
 
 // RestrictPrivate replaces inherited permissions with a protected DACL for the

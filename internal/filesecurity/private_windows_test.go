@@ -49,3 +49,28 @@ func TestPrivateFileWindowsACL(t *testing.T) {
 		t.Fatal("ACL leggibile da Everyone accettata")
 	}
 }
+
+func TestTrustedWindowsOwners(t *testing.T) {
+	userSID, systemSID, adminSID, err := privateSIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, sid := range map[string]*windows.SID{
+		"current-user":   userSID,
+		"local-system":   systemSID,
+		"administrators": adminSID,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !isTrustedSID(sid, userSID, systemSID, adminSID) {
+				t.Fatal("proprietario fidato rifiutato")
+			}
+		})
+	}
+	worldSID, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isTrustedSID(worldSID, userSID, systemSID, adminSID) {
+		t.Fatal("Everyone accettato come proprietario fidato")
+	}
+}
