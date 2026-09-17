@@ -1,42 +1,45 @@
-# Installazione su Linux dedicato
+# Install on a dedicated Linux server
 
-Per un'installazione nuova, collaudata e descritta passo passo su Debian 13
-AMD64, seguire [INSTALL-DEBIAN.md](INSTALL-DEBIAN.md). Questo documento rimane
-il riferimento per architettura, reinstallazione e migrazione di dati esistenti.
+For a new, production-tested installation on Debian 13 AMD64, follow the
+step-by-step [Debian installation guide](INSTALL-DEBIAN.md). This document
+covers the architecture, clean reinstalls, and migration of existing data.
 
-Le unità systemd fornite eseguono due processi con utenti distinti:
+The supplied systemd units run two processes under separate users:
 
 ```text
-client → receiver HTTPS → writer su socket Unix → archivio e catalogo
+client -> HTTPS receiver -> writer over Unix socket -> archive and catalog
 ```
 
-Il collaudo Docker prova i permessi Unix reali; l'avvio systemd sul server di
-destinazione resta da verificare. I permessi proteggono l'archivio dal receiver,
-ma non implementano immutabilità WORM contro root o contro il writer, che deve
-poter creare file e aggiornare il catalogo. Vedere [SECURITY](SECURITY.md).
+The service units are running in production on Debian 13. The Docker isolation
+test also verifies the Unix permissions independently. These permissions
+protect the archive from the receiver, but they do not provide WORM immutability
+against root or the writer, which must create files and update the catalog. See
+[SECURITY.md](SECURITY.md).
 
-## Utenti e percorsi
+## Users and paths
 
-| Componente | Utente | Gruppo primario | Gruppi supplementari |
+| Component | User | Primary group | Supplementary groups |
 |---|---|---|---|
-| Writer | onlybackup-writer | onlybackup-ingest | nessuno |
-| Receiver | onlybackup-receiver | onlybackup-ingest | onlybackup-receiver (TLS) |
+| Writer | `onlybackup-writer` | `onlybackup-ingest` | none |
+| Receiver | `onlybackup-receiver` | `onlybackup-ingest` | `onlybackup-receiver` for TLS |
 
-Il writer possiede `/var/lib/onlybackup` con modo 0700 e accede a `incoming`,
-`backups` e `metadata.db`. Il receiver può aprire soltanto la socket del writer.
+The writer owns `/var/lib/onlybackup` with mode 0700 and accesses `incoming`,
+`backups`, and `metadata.db`. The receiver can open only the writer's socket.
 
-- `/run/onlybackup`: writer:onlybackup-ingest, 0750; socket 0660.
-- `/etc/onlybackup`: root:onlybackup-receiver, 0750; chiave TLS 0640.
-- chiave privata age: custodita separatamente, mai necessaria ai servizi.
+- `/run/onlybackup`: `onlybackup-writer:onlybackup-ingest`, mode 0750; socket
+  mode 0660.
+- `/etc/onlybackup`: `root:onlybackup-receiver`, mode 0750; TLS private key
+  mode 0640.
+- Private age key: stored separately and never required by the services.
 
-La directory della socket e il relativo lock non devono essere scrivibili dal
-receiver. Non concedere al receiver ACL o gruppi che permettano di attraversare
-la directory dell'archivio.
+The socket directory and writer lock must not be writable by the receiver. Do
+not grant the receiver ACLs or group memberships that allow it to traverse the
+archive directory.
 
-## Nuova installazione
+## New installation
 
-Eseguire dalla radice dell'archivio binario estratto, oppure dai sorgenti dopo
-`make build`:
+Run these commands from the extracted binary archive, or from the source tree
+after `make build`:
 
 ```bash
 sudo groupadd --system onlybackup-ingest
@@ -49,35 +52,35 @@ sudo -u onlybackup-writer /usr/local/bin/onlybackup-admin --state /var/lib/onlyb
 sudo install -d -o root -g onlybackup-receiver -m 0750 /etc/onlybackup
 ```
 
-Creare una credenziale di deposito, per esempio con il profilo `M`:
+Create a deposit credential, for example with the `M` profile:
 
 ```bash
 sudo -u onlybackup-writer /usr/local/bin/onlybackup-admin \
   --state /var/lib/onlybackup keys create \
-  --name client-principale --profile M \
-  --out /var/lib/onlybackup/send-client-principale.key
+  --name primary-client --profile M \
+  --out /var/lib/onlybackup/send-primary-client.key
 ```
 
-Consegnare il file `.key` al client tramite un canale sicuro e conservarlo con
-permessi 0600. Dopo averne verificato la copia, eliminare l'esemplare in chiaro
-dal server: nel catalogo resta soltanto il suo hash. Non lasciarlo accessibile al
-receiver.
+Transfer the `.key` file to the client over a secure channel and keep it with
+mode 0600. After verifying the copy, remove the plaintext credential file from
+the server; only its hash remains in the catalog. Never leave it accessible to
+the receiver.
 
-Sul client installare `onlybackup` e `onlybackup-recover`, quindi creare e
-custodire separatamente l'identità age:
+Install `onlybackup` and `onlybackup-recover` on the client, then create and
+store the age identity separately:
 
 ```bash
 onlybackup-recover keygen --out age-identity.txt > age-public.json
 chmod 0600 age-identity.txt
 ```
 
-Senza `age-identity.txt` i backup cifrati non sono recuperabili. Il valore
-`recipient` di `age-public.json` va copiato come `encrypt_to` nella configurazione
-client; la chiave privata non va installata sul server di deposito.
+Encrypted backups cannot be recovered without `age-identity.txt`. Copy the
+`recipient` value from `age-public.json` to `encrypt_to` in the client
+configuration. Never install the private identity on the deposit server.
 
-Installare certificato e chiave TLS come `/etc/onlybackup/server.crt` e
-`/etc/onlybackup/server.key`, proprietà root:onlybackup-receiver, con chiave 0640.
-Poi installare e avviare le unità:
+Install the TLS certificate and private key as `/etc/onlybackup/server.crt` and
+`/etc/onlybackup/server.key`, owned by `root:onlybackup-receiver`, with mode 0640
+on the private key. Then install and start the services:
 
 ```bash
 sudo install -m 0644 deploy/onlybackup-writer.service deploy/onlybackup-receiver.service /etc/systemd/system/
@@ -85,12 +88,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now onlybackup-writer.service onlybackup-receiver.service
 ```
 
-Systemd crea `/run/onlybackup`. Il writer ha `PrivateNetwork=yes` e accede in
-scrittura allo stato; il receiver espone HTTPS sulla porta 8443, accede alla
-socket Unix e ha `/var/lib/onlybackup` dichiarata inaccessibile. Predisporre
-firewall e rinnovo del certificato.
+Systemd creates `/run/onlybackup`. The writer uses `PrivateNetwork=yes` and has
+write access to the state. The receiver exposes HTTPS on port 8443, accesses the
+Unix socket, and has `/var/lib/onlybackup` marked as inaccessible. Configure the
+firewall and certificate renewal for your environment.
 
-Sul client creare `client.json`, tenendo `send.key` nella stessa directory:
+Create `client.json` on the client, with `send.key` in the same directory:
 
 ```json
 {
@@ -100,27 +103,27 @@ Sul client creare `client.json`, tenendo `send.key` nella stessa directory:
 }
 ```
 
-Eseguire un primo deposito e conservare la ricevuta JSON:
+Run an initial upload and retain its JSON receipt:
 
 ```bash
 onlybackup send --config client.json \
-  --description "Primo backup di prova" backup.sql > receipt.json
+  --description "Initial production backup" backup.sql > receipt.json
 ```
 
-## Reinstallazione pulita di un ambiente di prova
+## Clean reinstall of a disposable environment
 
-Usare questa procedura soltanto quando lo stato esistente non contiene backup,
-profili o credenziali da conservare. I comandi sono limitati ai servizi e ai
-percorsi di OnlyBackup; non richiedono il riavvio della macchina.
+Use this procedure only when the existing state contains no backups, profiles,
+or credentials that must be preserved. The commands affect only OnlyBackup
+services and paths and do not require a server reboot.
 
-Fermare le vecchie unità e disabilitare l'eventuale vault:
+Stop the old units and disable the optional vault:
 
 ```bash
 sudo systemctl disable --now onlybackup-receiver.service onlybackup-writer.service
 sudo systemctl disable --now onlybackup-vault.service 2>/dev/null || true
 ```
 
-Eliminare lo stato sacrificabile e i soli componenti non più distribuiti:
+Remove the disposable state and only the components no longer distributed:
 
 ```bash
 sudo rm -rf -- /var/lib/onlybackup
@@ -129,74 +132,76 @@ sudo rm -f -- /usr/local/bin/onlybackup-vault
 sudo systemctl daemon-reload
 ```
 
-Installare insieme i binari e le due unità della nuova versione seguendo la
-sezione "Nuova installazione", quindi inizializzare `/var/lib/onlybackup` come
-`onlybackup-writer:onlybackup-ingest`. Gli utenti e i gruppi correnti possono
-essere riutilizzati; l'eventuale appartenenza del writer al vecchio gruppo vault
-va rimossa:
+Install the programs and both current units together by following "New
+installation", then initialize `/var/lib/onlybackup` as
+`onlybackup-writer:onlybackup-ingest`. Existing users and groups can be reused.
+Remove the writer from the old vault group if necessary:
 
 ```bash
 sudo gpasswd --delete onlybackup-writer onlybackup-vault-ingest 2>/dev/null || true
 ```
 
-Il certificato TLS in `/etc/onlybackup` può essere mantenuto se è ancora valido.
-Creare invece un nuovo profilo e una nuova credenziale di deposito: le
-credenziali precedenti non appartengono al catalogo appena inizializzato. Dopo
-aver aggiornato il client, avviare e verificare i due servizi:
+Keep the TLS certificate in `/etc/onlybackup` if it is still valid. Create a new
+profile and deposit credential because credentials from the old catalog are not
+present in the newly initialized one. After updating the client, start and
+verify both services:
 
 ```bash
 sudo systemctl enable --now onlybackup-writer.service onlybackup-receiver.service
 sudo systemctl status onlybackup-writer.service onlybackup-receiver.service --no-pager
 ```
 
-## Migrazione da una versione con vault
+## Migrate from a vault-based version
 
-La rimozione del processo `onlybackup-vault` non cambia il formato dei backup né
-il percorso dello stato. Pianificare la migrazione con una finestra di arresto:
+Removing `onlybackup-vault` does not change the backup format or state path.
+Schedule a maintenance window and:
 
-1. arrestare receiver, writer e il vecchio vault;
-2. eseguire e verificare una copia a freddo dell'intera directory di stato,
-   inclusi eventuali `metadata.db-wal` e `metadata.db-shm`;
-3. installare insieme tutti i nuovi binari e le due nuove unità;
-4. assegnare ricorsivamente lo stato a `onlybackup-writer:onlybackup-ingest`,
-   mantenendo directory 0700, database 0600 e backup 0400;
-5. rimuovere ACL e gruppi che davano accesso ai vecchi componenti, disabilitare
-   `onlybackup-vault.service`, quindi avviare writer e receiver;
-6. verificare un replay idempotente, un nuovo deposito e un recupero dalla copia.
+1. Stop the receiver, writer, and old vault.
+2. Create and verify a cold copy of the entire state directory, including any
+   `metadata.db-wal` and `metadata.db-shm` files.
+3. Install all current programs and both current units together.
+4. Recursively assign the state to `onlybackup-writer:onlybackup-ingest`, keeping
+   directories at 0700, the database at 0600, and backups at 0400.
+5. Remove ACLs and groups that granted access to old components, disable
+   `onlybackup-vault.service`, then start the writer and receiver.
+6. Verify an idempotent replay, a new upload, and recovery from the copy.
 
-Non avviare vecchio vault e nuovo writer sullo stesso archivio. Il lock
-`writer.lock` impedisce l'uso simultaneo ai binari compatibili, ma non sostituisce
-la procedura di arresto e la verifica dei processi.
+Never run the old vault and current writer against the same archive. The
+`writer.lock` file prevents concurrent use by compatible programs but does not
+replace an orderly shutdown and process check.
 
-## Schema SQLite e archivio esistente
+## SQLite schema and existing archives
 
-I nuovi binari leggono cataloghi v1, v2, v3 e v4 in sola lettura. La prima
-apertura in scrittura aggiorna alla v4 con transazioni: aggiunge progressivamente
-`content_format`, la chiave di idempotenza e lo storico dei tentativi necessario
-alla finestra mobile di 24 ore. Le righe scadute possono essere eliminate alla
-successiva ammissione della stessa chiave.
-La migrazione v3-v4 importa una volta il solo tentativo ricostruibile da
-`backups.started_at`; i ritenti più vecchi già sovrascritti non sono ricostruibili.
+Current programs open v1, v2, v3, and v4 catalogs in read-only mode. The first
+write access upgrades older catalogs to v4 in transactions, progressively
+adding `content_format`, the idempotency key, and the attempt history required
+for the rolling 24-hour window. Expired attempt rows may be removed when the
+same key is next admitted.
 
-I file preesistenti non vengono modificati o ricifrati. Non riaprire uno schema
-v4 con vecchi binari. Per tornare indietro serve la copia completa precedente
-alla migrazione; non esiste una migrazione inversa automatica.
+The v3-to-v4 migration imports the one attempt that can be reconstructed from
+`backups.started_at`. Older retries that were already overwritten cannot be
+reconstructed.
 
-## Collaudo e copia di sicurezza
+Existing backup files are not changed or re-encrypted. Do not open a v4 schema
+with older programs. Downgrading requires the complete pre-upgrade copy; there
+is no automatic reverse migration.
 
-Verificare sul server dedicato:
+## Production checks and cold copies
 
-- avvio dei due servizi e invio HTTPS con certificato verificato;
-- receiver incapace di leggere, modificare, rinominare o eliminare archivio e catalogo;
-- invii oltre quota, disco quasi pieno, arresti durante upload e riconciliazione;
-- recupero in chiaro e cifrato da una copia indipendente.
+Verify the following on the dedicated server:
 
-Per una copia consistente a freddo arrestare receiver e writer, non eseguire
-comandi amministrativi durante la copia, copiare l'intero stato e poi riavviare.
-Il test `make system-test` esegue questo ciclo su archivi temporanei.
+- both services start and accept an HTTPS upload with certificate validation;
+- the receiver cannot read, modify, rename, or delete the archive or catalog;
+- over-quota uploads, low disk space, interrupted uploads, and reconciliation
+  behave as expected;
+- plaintext and encrypted files can be recovered from an independent copy.
 
-Il limite di arresto ordinato applicativo è 15 secondi, seguito da interruzione
-delle connessioni e attesa degli handler. Systemd concede 25 secondi. Un blocco
-I/O oltre tale tempo può portare a SIGKILL e richiedere riconciliazione al
-riavvio. L'assenza della ricevuta non prova che il deposito sia assente: ripetere
-la stessa operazione con la stessa chiave di idempotenza.
+For a consistent cold copy, stop the receiver and writer, run no administrative
+commands during the copy, copy the complete state, and restart both services.
+`make system-test` exercises this sequence with temporary archives.
+
+The application allows 15 seconds for an orderly shutdown before canceling
+connections and waiting for handlers. Systemd allows 25 seconds. An I/O stall
+beyond that period can result in SIGKILL and require reconciliation at restart.
+The absence of a receipt does not prove that a deposit is absent; retry the same
+operation with the same idempotency key.

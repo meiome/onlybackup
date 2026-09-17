@@ -1,104 +1,109 @@
-# Sicurezza e confini verificati
+# Security model and verified boundaries
 
-OnlyBackup espone un endpoint pubblico di solo deposito. La credenziale client
-non può leggere, elencare, modificare o cancellare backup tramite il protocollo.
+OnlyBackup exposes one public deposit-only endpoint. A client credential cannot
+read, list, modify, or delete backups through the protocol.
 
-## Separazione dei processi
+## Process isolation
 
-Il receiver termina TLS e inoltra in streaming alla socket Unix del writer. Non
-apre file di backup, catalogo o credenziali persistenti. Il writer autentica,
-applica quote, frequenza e concorrenza, registra i tentativi, verifica dimensione
-e SHA-256, pubblica i file e aggiorna SQLite.
+The receiver terminates TLS and streams requests to the writer over a Unix
+socket. It does not open backup files, the catalog, or persistent credentials.
+The writer authenticates requests, applies quota, rate, and concurrency limits,
+records attempts, verifies size and SHA-256, publishes files, and updates
+SQLite.
 
-Le unità systemd usano utenti distinti. `/var/lib/onlybackup` è 0700 e appartiene
-al writer; il receiver condivide soltanto il gruppo necessario ad aprire la
-socket 0660. Questa separazione limita una compromissione del processo esposto a
-Internet, purché non siano presenti ACL, gruppi o mount aggiuntivi.
+The systemd units use separate users. `/var/lib/onlybackup` has mode 0700 and is
+owned by the writer. The receiver shares only the group required to open the
+0660 socket. This separation limits the effect of a compromised Internet-facing
+process, provided no additional ACLs, groups, or mounts grant access.
 
-Il writer è un componente fidato con accesso completo all'archivio. I file 0400,
-la pubblicazione senza sostituzione e l'assenza di API distruttive proteggono dal
-comportamento ordinario e dagli errori del percorso di upload. Non impediscono a
-root o a chi controlla completamente l'utente writer di modificare o cancellare
-i dati. Per quel rischio serve una copia offline o storage WORM indipendente.
+The writer is a trusted component with full archive access. Mode 0400, publication
+without replacement, and the absence of destructive API operations protect
+against normal upload behavior and accidental errors. They do not prevent root
+or a party with full control of the writer account from modifying or deleting
+data. Protect against that risk with independent WORM storage or an offline copy.
 
-| Minaccia | Protezione e limite |
+| Threat | Protection and limitation |
 |---|---|
-| Credenziale di deposito rubata | Può inviare entro quota, ma non leggere o cancellare via API. Può consumare quota con dati inutili. |
-| Receiver compromesso | Non accede all'archivio con le unità fornite. Può osservare credenziali e dati in transito; cifrare sul client i contenuti sensibili. |
-| Writer o root compromesso | Può alterare l'archivio; questo scenario non è coperto da immutabilità. |
-| Lettura del disco | I file in chiaro sono leggibili. I file age richiedono la chiave privata custodita altrove; metadati, dimensioni e tempi restano visibili. |
-| Interruzione del deposito | Dimensione, hash, fsync, commit e riconciliazione impediscono una ricevuta positiva per un file incompleto. |
-| Dump applicativo già errato | Il checksum non lo rileva. Servono prove periodiche di importazione e controlli applicativi. |
+| Stolen deposit credential | It can upload within quota but cannot read or delete through the API. It can consume quota with unwanted data. |
+| Compromised receiver | With the supplied units, it cannot access the archive. It can observe credentials and data in transit; encrypt sensitive content on the client. |
+| Compromised writer or root | It can alter the archive; OnlyBackup does not claim immutability for this scenario. |
+| Disk access | Plaintext backups are readable. Age-encrypted files require the separately stored private key; metadata, sizes, and timestamps remain visible. |
+| Interrupted deposit | Length and hash checks, fsync, catalog commit, and reconciliation prevent a positive receipt for an incomplete file. |
+| Invalid application dump | The checksum cannot detect a logically bad dump. Run periodic imports and application-level checks. |
 
-## Interruzioni, finalizzazione e retry
+## Interruptions, finalization, and retries
 
-Il receiver limita a 32 gli inoltri concorrenti. Se il writer si disconnette
-mentre il receiver attende un corpo client bloccato, l'errore sulla socket Unix
-interrompe quella lettura e libera lo slot. Una risposta anticipata del writer
-viene letta interamente entro 64 KiB e 5 secondi prima di interrompere il corpo,
-così il suo JSON autorevole non viene perso. Una reale disconnessione client
-cancella l'inoltro e libera le risorse.
+The receiver allows at most 32 forwarded requests at once. If the writer
+disconnects while the receiver waits on a stalled client body, the Unix socket
+error stops that read and releases the slot. An early writer response is read in
+full, within a 64 KiB and five-second limit, before the request body is stopped.
+This preserves the authoritative JSON response. A real client disconnection
+cancels forwarding and releases resources.
 
-Il writer non usa la cancellazione del contesto HTTP per annullare una
-finalizzazione già possibile. Se ha ricevuto e verificato tutti i byte, completa
-pubblicazione durevole e catalogo anche quando la risposta non può più arrivare
-al client. Se mancano byte, marca il tentativo fallito, elimina il temporaneo e
-libera prenotazione e slot. Il tentativo ammesso resta nello storico della
-finestra mobile di 24 ore; le righe più vecchie, non più usate dai limiti,
-vengono eliminate alla successiva ammissione della stessa chiave.
+The writer does not use HTTP context cancellation to abort a finalization that
+can still complete. Once all bytes have been received and verified, it finishes
+durable publication and updates the catalog even if the response can no longer
+reach the client. If bytes are missing, it marks the attempt as failed, removes
+the temporary file, and releases the reservation and slot. The admitted attempt
+remains in the rolling 24-hour history. Older rows that no longer affect limits
+are removed on the next admission for the same key.
 
-La pubblicazione usa un hard link e non sostituisce un percorso esistente. Dopo
-la pubblicazione, un errore di sincronizzazione o del catalogo produce un esito
-non confermato e non elimina il file finale. Al riavvio il writer verifica file,
-dimensione e digest e completa il record. Un replay v2 già completo restituisce
-la ricevuta originale senza nuovo corpo, file o tentativo; una chiave riutilizzata
-con dati differenti o ancora in corso restituisce conflitto.
+Publication uses a hard link and never replaces an existing path. After
+publication, a directory-sync or catalog error produces an unconfirmed outcome
+and does not remove the final file. At restart, the writer verifies the file,
+size, and digest and completes the record. Replaying a completed v2 request
+returns the original receipt without a new body, file, or counted attempt. A key
+reused with different data, or while still in progress, returns a conflict.
 
-Gli errori di scrittura e di finalizzazione dovuti a spazio esaurito sono distinti
-dagli errori di lettura del client e arrivano come HTTP 507 con JSON esplicito.
-Altri errori che rendono incerto l'esito non producono una ricevuta positiva.
+Write and finalization failures caused by insufficient space return HTTP 507
+with explicit JSON. Other errors that make the outcome uncertain never produce
+a positive receipt.
 
-## Cifratura
+## Encryption
 
-Il client cifra normalmente con age e destinatario X25519. L'invio in chiaro
-richiede `--plaintext` o `plaintext: true`; senza destinatario age o consenso
-esplicito il client fallisce prima della connessione. La chiave privata, generata
-con `onlybackup-recover keygen`, non è richiesta ai servizi e va custodita e
-provata separatamente.
+The client normally encrypts with age for an X25519 recipient. Plaintext upload
+requires `--plaintext` or `plaintext: true`. Without an age recipient or
+explicit plaintext consent, the client fails before connecting. The private
+key, created with `onlybackup-recover keygen`, is not required by the services;
+store and test it separately.
 
-Il client rifiuta chiavi di deposito e identità age con permessi troppo ampi.
-Su Linux richiede che gruppo e altri non abbiano accesso; i file creati dal
-programma sono limitati a 0600. Su Windows accetta come proprietari e nella DACL
-soltanto l'utente corrente, LocalSystem e Administrators; i file creati dal
-programma ricevono una DACL protetta equivalente. Questa verifica non
-sostituisce la cifratura del disco né protegge da un amministratore locale.
+The client rejects deposit credentials and age identities with permissions that
+are too broad. On Linux, group and other users must have no access; files created
+by the program use mode 0600. On Windows, only the current user, LocalSystem,
+and Administrators may own or appear in the DACL; files created by the program
+receive an equivalent protected DACL. These checks do not replace disk
+encryption or protect against a local administrator.
 
-Il recupero verifica il cifrato su una copia temporanea, poi decifra e pubblica
-un file nuovo solo a verifica conclusa. Le dipendenze sono fissate con checksum
-nel modulo Go; questo non equivale a un audit indipendente.
+Recovery verifies encrypted input through a temporary copy, then decrypts and
+publishes a new file only after complete verification. Go module dependencies
+are pinned with checksums; this is not equivalent to an independent security
+audit.
 
-## Prove riproducibili
+## Reproducible checks
 
-- `make check`: suite Go, analisi statica e controllo vulnerabilità aggiornato.
-- `make race`: regressioni di concorrenza, interruzione, idempotenza e quote.
-- `make smoke`: binari reali, HTTPS, socket Unix, catalogo e recupero.
-- `make system-test`: due processi, cifratura/chiaro, revoca, riavvio e copia a freddo.
-- `make isolation-test`: utenti Linux distinti in un contenitore senza rete; il receiver tenta realmente di leggere e alterare l'archivio.
-- `make mysql-test`: dump e import MariaDB temporanei; dettagli in [RESTORE-TEST](RESTORE-TEST.md).
-- `.github/workflows/client-windows.yml`: test di client, ACL, cifratura e
-  recupero su Windows Server 2022, più compilazione degli eseguibili AMD64.
+- `make check`: Go test suite, static analysis, and current vulnerability scan.
+- `make race`: concurrency, interruption, idempotency, and quota regressions.
+- `make smoke`: real programs, HTTPS, Unix socket, catalog, and recovery.
+- `make system-test`: two processes, encrypted and plaintext deposits,
+  revocation, restart, and cold copy.
+- `make isolation-test`: separate Linux users in a network-isolated container;
+  the receiver actually attempts to read and alter the archive.
+- `make mysql-test`: temporary MariaDB dump and import; see
+  [RESTORE-TEST.md](RESTORE-TEST.md).
+- `.github/workflows/client-windows.yml`: client, ACL, encryption, and recovery
+  tests on Windows Server 2022, plus native AMD64 builds.
 
-La prova Docker verifica i permessi del filesystem Linux, non l'avvio delle unità
-systemd né storage WORM. Non dimostra resistenza a root, guasti fisici reali o
-recuperabilità di ogni backup futuro. La prova Windows non copre tutte le
-versioni desktop, i filesystem non NTFS o le policy aziendali locali.
+The Docker test verifies Linux filesystem permissions, not WORM storage or
+resistance to root and physical disk failures. Production deployment separately
+validates the supplied systemd units. No test can guarantee the recoverability
+of future backups. Windows tests do not cover every desktop release, non-NTFS
+filesystems, or local enterprise policies.
 
-## Compatibilità
+## Compatibility
 
-Il contenuto dei vecchi backup resta invariato. Lo schema v4 aggiunge lo storico
-dei tentativi necessario alla finestra mobile e importa una volta il
-`started_at` ricostruibile per ogni backup v3. I tentativi scaduti possono essere
-rimossi alla successiva ammissione della stessa chiave. L'apertura readonly dei
-cataloghi v1-v3 non migra né scrive e usa il miglior conteggio disponibile dai
-record dei backup. Eseguire una copia a freddo prima dell'aggiornamento e
-aggiornare insieme tutti i binari.
+Existing backup content remains unchanged. Schema v4 adds the attempt history
+required for the rolling window and imports the one reconstructable
+`started_at` value for each v3 backup. Expired attempts can be removed on the
+next admission for the same key. Opening v1-v3 catalogs read-only does not
+migrate or write them and uses the best available count from backup records.
+Create a cold copy before upgrading and upgrade all programs together.

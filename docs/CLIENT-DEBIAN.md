@@ -1,64 +1,67 @@
-# Client OnlyBackup su Debian
+# OnlyBackup client on Debian
 
-Questa guida installa il client nativo su Debian AMD64, prepara cifratura e
-credenziale e automatizza l'invio di file già prodotti. Per il server vedere
-[INSTALL-DEBIAN.md](INSTALL-DEBIAN.md).
+This guide installs the native client on Debian AMD64, configures encryption
+and credentials, and automates uploads of files that have already been created.
+For server setup, see [INSTALL-DEBIAN.md](INSTALL-DEBIAN.md).
 
-## Cosa serve
+## Requirements
 
-Il client usa tre elementi distinti:
+The client uses three separate elements:
 
-- `onlybackup`: cifra, calcola il digest, autentica la richiesta e invia il file;
-- una credenziale `send.key`: autorizza il deposito, ma da sola non può inviare;
-- un recipient age pubblico: indica con quale identità privata cifrare.
+- `onlybackup` encrypts the file, calculates its digest, authenticates the
+  request, and uploads it;
+- a `send.key` credential authorizes deposits but cannot perform an upload by
+  itself;
+- a public age recipient identifies the private identity that can decrypt the
+  backup.
 
-`age-identity.txt` è la chiave privata di recupero. Non deve trovarsi sul server
-di deposito e non va confusa con `send.key`.
+`age-identity.txt` is the private recovery key. Never store it on the deposit
+server or confuse it with `send.key`.
 
-Per backup reali creare sul server un profilo e una credenziale dedicati, con
-nome riferibile al PC o al carico di lavoro. Non riutilizzare credenziali di
-collaudo e non condividere la stessa chiave fra macchine indipendenti.
+For production backups, create a dedicated server profile and credential named
+for the computer or workload. Do not reuse test credentials or share one key
+between independent computers.
 
-## 1. Verificare e installare il programma
+## 1. Verify and install the client
 
-Scaricare archivio Linux e `SHA256SUMS` dalla stessa release. Verificare
-checksum e attestazione prima di estrarre:
+Download the Linux archive and `SHA256SUMS` from the same release. Verify the
+checksum and attestation before extracting it:
 
 ```bash
 sha256sum --check SHA256SUMS
-gh attestation verify onlybackup_VERSIONE_linux_amd64.tar.gz \
+gh attestation verify onlybackup_VERSION_linux_amd64.tar.gz \
   --repo meiome/onlybackup
-tar -xzf onlybackup_VERSIONE_linux_amd64.tar.gz
+tar -xzf onlybackup_VERSION_linux_amd64.tar.gz
 ```
 
-Installare per il solo utente corrente:
+Install the programs for the current user:
 
 ```bash
 install -d -m 0700 "$HOME/.local/bin"
 install -m 0755 \
-  onlybackup_VERSIONE_linux_amd64/bin/onlybackup \
-  onlybackup_VERSIONE_linux_amd64/bin/onlybackup-recover \
+  onlybackup_VERSION_linux_amd64/bin/onlybackup \
+  onlybackup_VERSION_linux_amd64/bin/onlybackup-recover \
   "$HOME/.local/bin/"
 ```
 
-Verificare che `$HOME/.local/bin` sia nel `PATH`, quindi:
+Make sure `$HOME/.local/bin` is in `PATH`, then run:
 
 ```bash
 onlybackup --help
 onlybackup-recover --help
 ```
 
-## 2. Preparare la directory privata
+## 2. Prepare private directories
 
 ```bash
 install -d -m 0700 "$HOME/.config/onlybackup"
 install -d -m 0700 "$HOME/.local/state/onlybackup/receipts"
 ```
 
-Copiare nella directory di configurazione:
+Copy these files into the configuration directory:
 
-- la nuova credenziale di produzione come `send-production.key`;
-- il certificato pubblico del server come `server.crt`, se usa una CA privata.
+- the new production credential as `send-production.key`;
+- the server's public certificate as `server.crt` when it uses a private CA.
 
 ```bash
 install -m 0600 send-production.key \
@@ -67,12 +70,12 @@ install -m 0644 server.crt \
   "$HOME/.config/onlybackup/server.crt"
 ```
 
-Dopo aver verificato la copia, eliminare l'esemplare consegnabile della
-credenziale dal server. Nel catalogo server rimane soltanto il suo hash.
+After verifying the copy, remove the transferable credential file from the
+server. Only its hash remains in the server catalog.
 
-## 3. Creare o importare l'identità age
+## 3. Create or import the age identity
 
-Se non esiste ancora un'identità di recupero:
+If you do not already have a recovery identity:
 
 ```bash
 onlybackup-recover keygen \
@@ -81,13 +84,13 @@ onlybackup-recover keygen \
 chmod 0600 "$HOME/.config/onlybackup/age-identity.txt"
 ```
 
-Conservare una seconda copia protetta di `age-identity.txt`. Se viene persa, i
-backup cifrati non sono recuperabili. Se esiste già un'identità valida, non
-rigenerarla: copiare nella configurazione il recipient pubblico corrispondente.
+Keep a second protected copy of `age-identity.txt`. Encrypted backups cannot be
+recovered if every copy is lost. If a valid identity already exists, do not
+regenerate it; copy its public recipient into the client configuration.
 
-## 4. Configurare il client
+## 4. Configure the client
 
-Creare `$HOME/.config/onlybackup/client.json`, sostituendo URL e recipient:
+Create `$HOME/.config/onlybackup/client.json`, replacing the URL and recipient:
 
 ```json
 {
@@ -98,82 +101,82 @@ Creare `$HOME/.config/onlybackup/client.json`, sostituendo URL e recipient:
 }
 ```
 
-I percorsi relativi vengono risolti rispetto alla directory di `client.json`.
-Se il certificato è emesso da una CA già fidata dal sistema, `ca_file` può
-essere omesso.
+Relative paths are resolved from the directory containing `client.json`. Omit
+`ca_file` when the certificate is issued by a CA already trusted by the system.
 
 ```bash
 chmod 0600 "$HOME/.config/onlybackup/client.json"
 ```
 
-## 5. Inviare un file
+## 5. Upload a file
 
-Il client accetta un file regolare già pronto. Non esegue dump, snapshot,
-compressione, selezione di directory o pianificazione.
+The client accepts one prepared regular file. It does not create dumps or
+snapshots, compress data, select directories, or schedule jobs.
 
 ```bash
 onlybackup send \
   --config "$HOME/.config/onlybackup/client.json" \
-  --description "Backup contabilità giornaliero" \
-  --receipt "$HOME/.local/state/onlybackup/receipts/receipt-manuale.json" \
-  /srv/export/contabilita.sql
+  --description "Daily accounting backup" \
+  --receipt "$HOME/.local/state/onlybackup/receipts/manual-receipt.json" \
+  /srv/export/accounting.sql
 ```
 
-La ricevuta viene creata soltanto con un nome nuovo e dopo la conferma del
-server. Il client non sovrascrive una ricevuta esistente.
+The receipt is written only after server confirmation, and only to a new file.
+The client never overwrites an existing receipt.
 
-## 6. Automatizzare con Bash e cron
+## 6. Automate uploads with Bash and cron
 
-La release contiene `scripts/backup-file.sh`. Installarlo:
+The release includes `scripts/backup-file.sh`. Install it with:
 
 ```bash
 install -m 0755 scripts/backup-file.sh "$HOME/.local/bin/onlybackup-file"
 ```
 
-Uso:
+Run it as follows:
 
 ```bash
 onlybackup-file \
-  /srv/export/contabilita.sql \
+  /srv/export/accounting.sql \
   "$HOME/.config/onlybackup/client.json" \
   "$HOME/.local/state/onlybackup/receipts" \
-  "Backup contabilità giornaliero"
+  "Daily accounting backup"
 ```
 
-Lo script genera un nome univoco per la ricevuta e delega cifratura, digest,
-TLS e invio al client. Un esempio `cron`, con percorsi assoluti, è:
+The script creates a unique receipt name and delegates encryption, hashing,
+TLS, and upload to the client. A cron entry with absolute paths can look like
+this:
 
 ```cron
-0 2 * * * /usr/bin/flock -n /home/utente/.local/state/onlybackup/send.lock /home/utente/.local/bin/onlybackup-file /srv/export/contabilita.sql /home/utente/.config/onlybackup/client.json /home/utente/.local/state/onlybackup/receipts "Backup contabilità giornaliero" >>/home/utente/.local/state/onlybackup/client.log 2>&1
+0 2 * * * /usr/bin/flock -n /home/user/.local/state/onlybackup/send.lock /home/user/.local/bin/onlybackup-file /srv/export/accounting.sql /home/user/.config/onlybackup/client.json /home/user/.local/state/onlybackup/receipts "Daily accounting backup" >>/home/user/.local/state/onlybackup/client.log 2>&1
 ```
 
-Il processo che produce il file deve completare prima dell'invio. Per database
-usare un dump consistente o uno snapshot applicativo; per MySQL è disponibile
-anche `scripts/backup-mysql.sh`.
+The process that creates the source file must finish before the upload starts.
+For databases, use an application-consistent dump or snapshot. The release also
+includes `scripts/backup-mysql.sh` for MySQL.
 
-## 7. Provare il recupero
+## 7. Test recovery
 
-L'API è deposit-only: il client non può scaricare backup dal server. Il test di
-recupero richiede una copia indipendente del file `.backup`, la ricevuta e
-l'identità age.
+The API is deposit-only: the client cannot download backups from the server. A
+recovery test requires an independent copy of the `.backup` file, its receipt,
+and the age identity.
 
 ```bash
 onlybackup-recover \
   --receipt receipt.json \
-  --archive ID_BACKUP.backup \
+  --archive BACKUP_ID.backup \
   --identity-file "$HOME/.config/onlybackup/age-identity.txt" \
-  --out file-recuperato
+  --out recovered-file
 ```
 
-Confrontare poi il file recuperato con l'originale o verificarlo
-applicativamente. La lettura diretta di una copia completa dello stato Linux
-resta disponibile tramite `--state DIRECTORY --id ID`.
+Compare the recovered file with the original or validate it with the relevant
+application. Recovery directly from a complete copy of the Linux state is also
+available with `--state DIRECTORY --id ID`.
 
 ## Checklist
 
-- credenziale distinta da quelle di test e con permessi 0600;
-- identità age custodita anche fuori dal PC di invio;
-- TLS verificato, senza opzioni che disabilitino i controlli;
-- ricevute conservate e incluse nelle procedure di ripristino;
-- automazione provata manualmente con lo stesso utente di `cron`;
-- recupero da copia indipendente eseguito periodicamente.
+- The credential is unique to this production workload and has mode 0600.
+- The age identity also has a protected copy outside the sending computer.
+- TLS verification is enabled, with no option that bypasses certificate checks.
+- Receipts are retained and included in recovery procedures.
+- Automation has been run manually as the same user that runs `cron`.
+- Recovery from an independent copy is tested regularly.

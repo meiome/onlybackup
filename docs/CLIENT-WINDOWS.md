@@ -1,57 +1,57 @@
-# Client OnlyBackup nativo su Windows
+# Native OnlyBackup client on Windows
 
-Le release che includono il supporto Windows distribuiscono due programmi
-nativi per Windows 10/11 AMD64:
+OnlyBackup releases include two native programs for Windows 10/11 AMD64:
 
-- `onlybackup.exe` per cifrare e inviare;
-- `onlybackup-recover.exe` per generare l'identità e recuperare da ricevuta.
+- `onlybackup.exe` encrypts and uploads files;
+- `onlybackup-recover.exe` creates an age identity and recovers files from a
+  receipt.
 
-Non servono WSL, Debian, Docker o una macchina virtuale. I servizi server e gli
-strumenti amministrativi restano Linux-only.
+They do not require WSL, Debian, Docker, or a virtual machine. Server services
+and administrative tools remain Linux-only.
 
-Usare Windows 10/11 a 64 bit e un volume NTFS per configurazione e file di
-recupero: le ACL private e la pubblicazione senza sovrascrittura dipendono dalle
-funzioni di sicurezza del filesystem.
+Use 64-bit Windows 10/11 and an NTFS volume for configuration and recovery
+files. Private ACLs and no-overwrite file creation depend on filesystem security
+features provided by NTFS.
 
-## Cosa serve
+## Requirements
 
-La credenziale `send.key` autorizza il deposito, ma non esegue alcuna operazione
-da sola. `onlybackup.exe` gestisce cifratura age, SHA-256, TLS, autenticazione,
-invio e ricevuta.
+The `send.key` credential authorizes deposits but cannot perform an operation by
+itself. `onlybackup.exe` handles age encryption, SHA-256, TLS, authentication,
+upload, and receipt creation.
 
-Usare per ogni PC reale una credenziale server dedicata, separata da collaudo e
-da altri client. L'identità privata age serve invece a decifrare e deve essere
-custodita anche fuori dal PC.
+Use a dedicated server credential for each production computer, separate from
+test credentials and other clients. The private age identity decrypts backups;
+keep a protected copy outside the computer.
 
-## 1. Verificare la release
+## 1. Verify the release
 
-Scaricare dalla stessa release:
+Download these files from the same release:
 
-- `onlybackup_VERSIONE_windows_amd64.zip`;
+- `onlybackup_VERSION_windows_amd64.zip`;
 - `SHA256SUMS`.
 
-Da PowerShell, nella directory di download:
+In PowerShell, from the download directory:
 
 ```powershell
-Get-FileHash .\onlybackup_VERSIONE_windows_amd64.zip -Algorithm SHA256
+Get-FileHash .\onlybackup_VERSION_windows_amd64.zip -Algorithm SHA256
 Get-Content .\SHA256SUMS
-gh attestation verify .\onlybackup_VERSIONE_windows_amd64.zip `
+gh attestation verify .\onlybackup_VERSION_windows_amd64.zip `
   --repo meiome/onlybackup
 ```
 
-Il digest deve coincidere con la riga corrispondente di `SHA256SUMS` e
-l'attestazione deve riuscire. Estrarre soltanto dopo entrambe le verifiche:
+The digest must match the corresponding line in `SHA256SUMS`, and attestation
+verification must succeed. Extract the archive only after both checks pass:
 
 ```powershell
 Expand-Archive `
-  -LiteralPath .\onlybackup_VERSIONE_windows_amd64.zip `
+  -LiteralPath .\onlybackup_VERSION_windows_amd64.zip `
   -DestinationPath .\onlybackup-windows
 ```
 
-## 2. Installare per l'utente corrente
+## 2. Install for the current user
 
 ```powershell
-$source = Resolve-Path .\onlybackup-windows\onlybackup_VERSIONE_windows_amd64
+$source = Resolve-Path .\onlybackup-windows\onlybackup_VERSION_windows_amd64
 $programDir = Join-Path $env:LOCALAPPDATA "Programs\OnlyBackup"
 $configDir = Join-Path $env:LOCALAPPDATA "OnlyBackup"
 
@@ -60,17 +60,17 @@ New-Item -ItemType Directory -Force $configDir | Out-Null
 Copy-Item -Recurse -Force "$source\bin", "$source\scripts" $programDir
 ```
 
-Verificare:
+Verify the installation:
 
 ```powershell
 & "$programDir\bin\onlybackup.exe" --help
 & "$programDir\bin\onlybackup-recover.exe" --help
 ```
 
-## 3. Proteggere configurazione e chiavi con ACL
+## 3. Protect configuration and keys with ACLs
 
-Rimuovere l'ereditarietà dalla directory privata e consentire accesso soltanto
-all'utente corrente, LocalSystem e Administrators:
+Disable inheritance on the private directory and allow access only to the
+current user, LocalSystem, and Administrators:
 
 ```powershell
 $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -78,37 +78,36 @@ $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   /grant:r "*$($userSid):(OI)(CI)F" `
   "*S-1-5-18:(OI)(CI)F" `
   "*S-1-5-32-544:(OI)(CI)F"
-if ($LASTEXITCODE -ne 0) { throw "Configurazione ACL non riuscita" }
+if ($LASTEXITCODE -ne 0) { throw "Failed to configure private ACLs" }
 ```
 
-Copiare poi nella directory:
+Then copy the credential and, when required, the private CA certificate:
 
 ```powershell
 Copy-Item .\send-production.key "$configDir\send-production.key"
 Copy-Item .\server.crt "$configDir\server.crt"
 ```
 
-Il client accetta come proprietari soltanto l'utente corrente, LocalSystem o gli
-Administrators locali e rifiuta ACL che concedono accesso ad altri account.
-Dopo la copia verificata, eliminare l'esemplare consegnabile della credenziale
-dal server.
+The client accepts only the current user, LocalSystem, or local Administrators
+as owners, and rejects ACLs that grant access to other accounts. After verifying
+the copy, remove the transferable credential file from the server.
 
-## 4. Creare o importare l'identità age
+## 4. Create or import the age identity
 
-Se non esiste già un'identità:
+If an identity does not already exist:
 
 ```powershell
 & "$programDir\bin\onlybackup-recover.exe" keygen `
   --out "$configDir\age-identity.txt"
 ```
 
-Il comando mostra il recipient pubblico da inserire in `client.json` e applica
-alla nuova identità una ACL privata. Conservare un'altra copia protetta di
-`age-identity.txt`; senza di essa i backup cifrati non sono recuperabili.
+The command prints the public recipient for `client.json` and applies a private
+ACL to the new identity. Keep another protected copy of `age-identity.txt`;
+encrypted backups cannot be recovered without it.
 
-## 5. Configurare il client
+## 5. Configure the client
 
-Creare `$configDir\client.json`:
+Create `$configDir\client.json`:
 
 ```json
 {
@@ -119,10 +118,10 @@ Creare `$configDir\client.json`:
 }
 ```
 
-I percorsi relativi sono risolti rispetto a `client.json`. Se il certificato è
-emesso da una CA già fidata da Windows, `ca_file` può essere omesso.
+Relative paths are resolved from the directory containing `client.json`. Omit
+`ca_file` when Windows already trusts the certificate issuer.
 
-## 6. Eseguire un primo invio
+## 6. Run the first upload
 
 ```powershell
 $receiptDir = Join-Path $configDir "receipts"
@@ -130,62 +129,63 @@ New-Item -ItemType Directory -Force $receiptDir | Out-Null
 
 & "$programDir\bin\onlybackup.exe" send `
   --config "$configDir\client.json" `
-  --description "Primo backup Windows" `
-  --receipt "$receiptDir\receipt-manuale.json" `
-  "C:\Dati\export\backup.zip"
+  --description "First Windows backup" `
+  --receipt "$receiptDir\manual-receipt.json" `
+  "C:\Data\export\backup.zip"
 ```
 
-Il client cifra e invia un singolo file già pronto. Non seleziona directory,
-non crea snapshot e non pianifica l'esecuzione.
+The client encrypts and uploads one prepared file. It does not select
+directories, create snapshots, or schedule jobs.
 
-## 7. Automatizzare con PowerShell
+## 7. Automate uploads with PowerShell
 
-La release contiene `scripts\backup-file.ps1`:
+The release includes `scripts\backup-file.ps1`:
 
 ```powershell
 & "$programDir\scripts\backup-file.ps1" `
-  -Path "C:\Dati\export\backup.zip" `
-  -Description "Backup Windows giornaliero" `
+  -Path "C:\Data\export\backup.zip" `
+  -Description "Daily Windows backup" `
   -Client "$programDir\bin\onlybackup.exe" `
   -Config "$configDir\client.json" `
   -ReceiptDirectory "$configDir\receipts"
 ```
 
-Lo script genera una ricevuta con nome univoco e demanda al client cifratura,
-digest, TLS e invio. Eseguirlo manualmente con l'utente destinato prima di
-registrarlo nell'Utilità di pianificazione di Windows.
+The script creates a unique receipt name and delegates encryption, hashing,
+TLS, and upload to the client. Run it manually as the intended user before
+registering it in Windows Task Scheduler.
 
-Per la pianificazione creare un'attività che esegua:
+Create a scheduled task that runs:
 
 ```text
-powershell.exe -NoProfile -File "C:\...\backup-file.ps1" -Path "C:\Dati\export\backup.zip"
+powershell.exe -NoProfile -File "C:\...\backup-file.ps1" -Path "C:\Data\export\backup.zip"
 ```
 
-Configurare l'attività con lo stesso account proprietario di configurazione e
-chiavi. Non inserire la credenziale OnlyBackup negli argomenti o nello script.
+Run the task as the same account that owns the configuration and keys. Do not
+put the OnlyBackup credential in task arguments or in the script.
 
-## 8. Provare il recupero
+## 8. Test recovery
 
-L'API è deposit-only e non permette download. Ottenere tramite la procedura di
-ripristino una copia del file `.backup` corrispondente alla ricevuta:
+The API is deposit-only and does not provide downloads. Obtain a copy of the
+`.backup` file identified by the receipt through the local restore procedure:
 
 ```powershell
 & "$programDir\bin\onlybackup-recover.exe" `
-  --receipt "$configDir\receipts\receipt-manuale.json" `
-  --archive "D:\Ripristino\ID_BACKUP.backup" `
+  --receipt "$configDir\receipts\manual-receipt.json" `
+  --archive "D:\Recovery\BACKUP_ID.backup" `
   --identity-file "$configDir\age-identity.txt" `
-  --out "D:\Ripristino\file-recuperato.zip"
+  --out "D:\Recovery\recovered-file.zip"
 ```
 
-Il recuperatore verifica dimensione e SHA-256 della ricevuta prima di
-decifrare, non sovrascrive file esistenti e applica un'ACL privata all'output.
+The recovery tool verifies the size and SHA-256 value in the receipt before
+decrypting. It does not overwrite existing files and applies a private ACL to
+the output.
 
 ## Checklist
 
-- ZIP, checksum e attestazione verificati;
-- credenziale di produzione unica per il PC;
-- directory privata protetta con ACL e accettata dal client;
-- identità age copiata anche su un supporto separato;
-- invio manuale e ricezione della ricevuta completati;
-- attività pianificata eseguita con lo stesso account;
-- recupero periodico provato da una copia indipendente.
+- The ZIP, checksum, and attestation have been verified.
+- The production credential is unique to this computer.
+- The private directory has restricted ACLs accepted by the client.
+- A protected copy of the age identity exists on separate storage.
+- A manual upload completed and produced a receipt.
+- The scheduled task runs as the same account used during setup.
+- Recovery from an independent copy is tested regularly.

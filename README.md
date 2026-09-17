@@ -1,26 +1,27 @@
 # OnlyBackup
 
-OnlyBackup è un server di backup **deposit-only** per Linux: i client possono
-inviare nuovi file, ma l'API pubblica non permette di leggerli, modificarli o
-cancellarli.
+OnlyBackup is a production-ready, **deposit-only** backup server for Linux.
+Clients can upload new files, but the public API cannot read, modify, or delete
+them.
 
-Il trasferimento usa HTTPS con TLS 1.3. Normalmente il client cifra il contenuto
-con [age](https://age-encryption.org/) prima dell'invio; il salvataggio in chiaro
-deve essere scelto esplicitamente. Receiver e writer sono eseguiti con utenti
-Linux separati, così il receiver pubblico non accede all'archivio.
+Transfers use HTTPS with TLS 1.3. The client normally encrypts content with
+[age](https://age-encryption.org/) before upload; storing plaintext requires an
+explicit choice. The receiver and writer run as separate Linux users, so the
+public receiver cannot access the archive.
 
 ```text
-client → HTTPS receiver → socket Unix → writer ─┬─ file .backup
-                                                └─ SQLite
+client -> HTTPS receiver -> Unix socket -> writer -+- .backup file
+                                                   `- SQLite catalog
 ```
 
-> **Stato:** progetto in sviluppo. Suite, race detector, test di sistema e
-> isolamento sono disponibili; le unità systemd della release `v0.1.0` sono
-> state collaudate su un server Debian 13 AMD64 dedicato.
+> **Status:** stable and running in production. The automated test suite, race
+> detector, system tests, and isolation tests cover the supported workflow. The
+> supplied systemd services have been deployed on a dedicated Debian 13 AMD64
+> server.
 
-## Compilazione e prova dai sorgenti
+## Build and test from source
 
-Servono Linux, Go 1.27 o successivo e GCC.
+Building requires Linux, Go 1.27 or later, and GCC.
 
 ```bash
 make build
@@ -28,60 +29,59 @@ make check
 make smoke
 ```
 
-`make smoke` avvia un ambiente HTTPS temporaneo, invia e recupera un backup,
-verifica integrità e API vietate, quindi rimuove i dati di prova.
+`make smoke` starts a temporary HTTPS environment, uploads and recovers a
+backup, checks its integrity and the rejection of forbidden API operations,
+then removes the test data.
 
-Per produrre localmente i due client Windows AMD64 in `bin/windows-amd64`:
+To build the two native Windows AMD64 clients in `bin/windows-amd64`:
 
 ```bash
 make windows-client
 ```
 
-## Release verificabili
+## Verifiable releases
 
-Le release sono create da GitHub Actions soltanto per tag nel formato `vX.Y.Z`,
-dopo suite, analisi statica e race detector. Il pacchetto server Linux AMD64 è
-compilato su Ubuntu 22.04 ed è destinato a sistemi glibc compatibili; non è
-compatibile con Alpine Linux/musl. Il pacchetto client Windows AMD64 contiene
-gli eseguibili nativi `onlybackup.exe` e `onlybackup-recover.exe`, provati anche
-su un runner Windows Server 2022. Ogni archivio ha un checksum in `SHA256SUMS` e
-un'attestazione della provenienza della build.
+GitHub Actions creates releases only for tags in the `vX.Y.Z` format, after the
+test suite, static analysis, and race detector complete successfully. The Linux
+AMD64 server package is built on Ubuntu 22.04 for glibc-based systems; it does
+not support Alpine Linux or other musl-based distributions. The Windows AMD64
+package contains the native `onlybackup.exe` and `onlybackup-recover.exe`
+clients, also tested on Windows Server 2022. Each archive has an entry in
+`SHA256SUMS` and a build provenance attestation.
 
-La release `v0.1.0` precede il supporto Windows e contiene soltanto il pacchetto
-Linux. Il pacchetto ZIP sarà disponibile dalla prima release successiva che
-include queste modifiche.
-
-Dopo aver scaricato i due file della release, verificare prima di estrarre o
-eseguire:
+After downloading an archive and `SHA256SUMS` from the same release, verify them
+before extracting or running anything:
 
 ```bash
 sha256sum --check SHA256SUMS
-gh attestation verify onlybackup_VERSIONE_linux_amd64.tar.gz \
+gh attestation verify onlybackup_VERSION_linux_amd64.tar.gz \
   --repo meiome/onlybackup
 ```
 
-Per Windows verificare nello stesso modo
-`onlybackup_VERSIONE_windows_amd64.zip`; i comandi PowerShell completi sono nella
-[guida del client Windows](docs/CLIENT-WINDOWS.md).
+On Windows, verify `onlybackup_VERSION_windows_amd64.zip` in the same way. The
+complete PowerShell commands are in the
+[Windows client guide](docs/CLIENT-WINDOWS.md).
 
-Quindi estrarre l'archivio ed entrare nella directory:
+Then extract the Linux archive and enter its directory:
 
 ```bash
-tar -xzf onlybackup_VERSIONE_linux_amd64.tar.gz
-cd onlybackup_VERSIONE_linux_amd64
+tar -xzf onlybackup_VERSION_linux_amd64.tar.gz
+cd onlybackup_VERSION_linux_amd64
 ```
 
-Il checksum rileva modifiche accidentali; l'attestazione collega l'archivio al
-workflow e al commit che lo hanno prodotto. Non costituisce una garanzia che il
-programma sia privo di vulnerabilità.
+The checksum detects accidental changes. The attestation links the archive to
+the workflow and commit that produced it; it is not a guarantee that the
+software has no vulnerabilities.
 
-## Installazione e uso
+## Install and use
 
-Per il server seguire [docs/INSTALL-DEBIAN.md](docs/INSTALL-DEBIAN.md) su Debian
-13 oppure [docs/INSTALL.md](docs/INSTALL.md) per migrazioni e altri sistemi
-Linux. Per i PC che inviano backup sono disponibili guide distinte per
-[Debian](docs/CLIENT-DEBIAN.md) e [Windows nativo](docs/CLIENT-WINDOWS.md), con
-automazione Bash e PowerShell. Sul client, il file di configurazione è:
+For a new server, follow the [Debian 13 installation guide](docs/INSTALL-DEBIAN.md).
+Use the [general Linux guide](docs/INSTALL.md) for migrations and other Linux
+systems. Separate guides cover [Debian clients](docs/CLIENT-DEBIAN.md) and
+[native Windows clients](docs/CLIENT-WINDOWS.md), including Bash and PowerShell
+automation.
+
+A client configuration looks like this:
 
 ```json
 {
@@ -93,22 +93,22 @@ automazione Bash e PowerShell. Sul client, il file di configurazione è:
 
 ```bash
 onlybackup send --config client.json \
-  --description "Backup gestionale" backup.sql
+  --description "Daily accounting backup" backup.sql
 ```
 
-Il comando restituisce una ricevuta JSON soltanto dopo il salvataggio verificato.
-Per conservare volutamente il file leggibile sul server usare `--plaintext`.
-OnlyBackup riceve file già preparati; per MySQL è disponibile
-[scripts/backup-mysql.sh](scripts/backup-mysql.sh).
+The command returns a JSON receipt only after the server verifies and stores the
+backup. Use `--plaintext` only when you intentionally want the server to store
+readable content. OnlyBackup accepts files that have already been prepared; use
+[scripts/backup-mysql.sh](scripts/backup-mysql.sh) to create MySQL dumps.
 
-## Documentazione
+## Documentation
 
-- [Installazione passo passo su Debian 13](docs/INSTALL-DEBIAN.md)
-- [Client Debian](docs/CLIENT-DEBIAN.md)
-- [Client Windows nativo](docs/CLIENT-WINDOWS.md)
-- [Installazione protetta](docs/INSTALL.md)
-- [Modello di sicurezza](docs/SECURITY.md)
-- [Protocollo pubblico](docs/PROTOCOL.md)
-- [Prove di ripristino](docs/RESTORE-TEST.md)
+- [Debian 13 server installation](docs/INSTALL-DEBIAN.md)
+- [Debian client](docs/CLIENT-DEBIAN.md)
+- [Native Windows client](docs/CLIENT-WINDOWS.md)
+- [Linux installation and migration](docs/INSTALL.md)
+- [Security model](docs/SECURITY.md)
+- [Public protocol](docs/PROTOCOL.md)
+- [Restore testing](docs/RESTORE-TEST.md)
 
-Distribuito con licenza [GNU AGPL-3.0](LICENSE).
+Licensed under the [GNU AGPL-3.0](LICENSE).

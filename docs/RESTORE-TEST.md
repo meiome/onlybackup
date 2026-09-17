@@ -1,39 +1,39 @@
-# Prova di ripristino MariaDB isolata
+# Isolated MariaDB recovery test
 
-`scripts/mysql-restore-test.sh` verifica il percorso completo con MariaDB reale:
-crea dati e relazioni noti, produce due dump tramite `scripts/backup-mysql.sh`, li
-deposita via HTTPS in chiaro e con cifratura age attraversando receiver e writer,
-arresta entrambi i processi, recupera entrambi i
-contenuti localmente e li importa in un secondo database temporaneo. Confronta i
-dati, i caratteri UTF-8, gli importi aggregati e il vincolo esterno.
+`scripts/mysql-restore-test.sh` verifies the complete workflow with real
+MariaDB instances. It creates known data and relationships, produces two dumps
+with `scripts/backup-mysql.sh`, deposits them over HTTPS as plaintext and
+age-encrypted content through the receiver and writer, stops both processes,
+recovers both files locally, and imports them into a second temporary database.
+It checks the data, UTF-8 characters, aggregate amounts, and foreign-key
+constraint.
 
-La prova richiede i binari del progetto già compilati, Bash, OpenSSL, curl,
-Python 3 e MariaDB con `mariadbd`, `mariadb-install-db`, `mariadb` e
-`mysqldump` nei percorsi Debian usati dallo script. Esecuzione:
+The test requires built project programs, Bash, OpenSSL, curl, Python 3, and
+MariaDB with `mariadbd`, `mariadb-install-db`, `mariadb`, and `mysqldump` in the
+Debian paths used by the script. Run:
 
 ```sh
 make mysql-test
 ```
 
-Le due istanze MariaDB usano datadir indipendenti sotto una directory creata da
-`mktemp`. Accettano soltanto connessioni su socket Unix con `--skip-networking`.
-Ogni invocazione diretta usa `--no-defaults`; il vero `mysqldump` viene eseguito
-da un wrapper temporaneo con un unico `--defaults-file` che indica esclusivamente
-la socket sorgente. La prova non legge socket, credenziali o database MariaDB
-dell'host.
+The two MariaDB instances use independent data directories under a directory
+created by `mktemp`. They accept only Unix-socket connections with
+`--skip-networking`. Every direct invocation uses `--no-defaults`. A temporary
+wrapper runs the real `mysqldump` with one `--defaults-file` that identifies
+only the source socket. The test does not read MariaDB sockets, credentials, or
+databases from the host.
 
-Receiver e writer girano con lo stesso utente nel test MariaDB. La separazione
-effettiva degli UID e il rifiuto delle operazioni del receiver sull'archivio
-richiedono la prova di isolamento dedicata.
+The receiver and writer run as the same user during this MariaDB test. The
+dedicated isolation test separately verifies distinct UIDs and rejection of
+receiver operations against the archive.
 
-Il trap arresta soltanto i PID avviati dallo script e rimuove soltanto la propria
-directory `/tmp/onlybackup-mysql-restore.*`. Impostando
-`KEEP_MYSQL_RESTORE_FILES=1` conserva i file per una diagnosi. Questi contengono
-dati di prova, chiavi temporanee e copie del dump e devono poi essere rimossi con
-cura.
+The exit trap stops only the process IDs started by the script and removes only
+its own `/tmp/onlybackup-mysql-restore.*` directory. Set
+`KEEP_MYSQL_RESTORE_FILES=1` to retain files for diagnosis. Those files contain
+test data, temporary keys, and dump copies; remove them carefully afterward.
 
-Il risultato dimostra un ripristino applicativo del piccolo fixture sulla
-versione MariaDB riportata a fine esecuzione. Non certifica compatibilità con
-MySQL 8, dump di produzione, procedure, trigger, viste, grandi volumi o altre
-configurazioni SQL. Nessun dump non fidato viene importato nel server di deposito:
-la destinazione è una seconda istanza effimera e isolata.
+A passing result demonstrates application-level recovery of the small fixture
+with the MariaDB version printed at the end of the run. It does not certify
+compatibility with MySQL 8, production dumps, procedures, triggers, views,
+large datasets, or other SQL configurations. Untrusted dumps are never imported
+on the deposit server; the destination is a second isolated, temporary instance.
