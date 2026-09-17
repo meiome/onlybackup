@@ -75,11 +75,12 @@ software has no vulnerabilities.
 
 ## Install and use
 
-For a new server, follow the [Debian 13 installation guide](docs/INSTALL-DEBIAN.md).
-Use the [general Linux guide](docs/INSTALL.md) for migrations and other Linux
-systems. Separate guides cover [Debian clients](docs/CLIENT-DEBIAN.md) and
+For a new server, upgrade, or migration, follow the single
+[installation guide](docs/INSTALL.md). Separate guides cover
+[Debian clients](docs/CLIENT-DEBIAN.md) and
 [native Windows clients](docs/CLIENT-WINDOWS.md), including Bash and PowerShell
-automation.
+automation. Use the [operations runbook](docs/OPERATIONS.md) for monitoring,
+capacity, credential rotation, TLS renewal, cold copies, and recovery exercises.
 
 A client configuration looks like this:
 
@@ -103,10 +104,10 @@ readable content. OnlyBackup accepts files that have already been prepared; use
 
 ## Documentation
 
-- [Debian 13 server installation](docs/INSTALL-DEBIAN.md)
+- [Installation and migration](docs/INSTALL.md)
 - [Debian client](docs/CLIENT-DEBIAN.md)
 - [Native Windows client](docs/CLIENT-WINDOWS.md)
-- [Linux installation and migration](docs/INSTALL.md)
+- [Production operations](docs/OPERATIONS.md)
 - [Security model](docs/SECURITY.md)
 - [Public protocol](docs/PROTOCOL.md)
 - [Restore testing](docs/RESTORE-TEST.md)

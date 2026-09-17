@@ -48,17 +48,36 @@ jobs:
       - name: Controlla lo script PowerShell
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path scripts/backup-file.ps1),
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -ne 0) {
-            $errors | ForEach-Object { Write-Error $_ }
-            exit 1
+          foreach ($path in @(
+            "scripts/backup-file.ps1",
+            "scripts/install-windows-client.ps1",
+            "scripts/test-windows-installer.ps1"
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error $_ }
+              exit 1
+            }
           }
+
+      - name: Compila i client Windows
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          New-Item -ItemType Directory -Force bin | Out-Null
+          go build -buildvcs=false -trimpath -o bin/onlybackup.exe ./cmd/onlybackup
+          go build -buildvcs=false -trimpath -o bin/onlybackup-recover.exe ./cmd/onlybackup-recover
+
+      - name: Prova installer e ACL private
+        shell: pwsh
+        run: '& scripts/test-windows-installer.ps1 -SourceRoot $PWD'
 
   release:
     name: Linux e client Windows AMD64

@@ -2,7 +2,7 @@
 
 This guide installs the native client on Debian AMD64, configures encryption
 and credentials, and automates uploads of files that have already been created.
-For server setup, see [INSTALL-DEBIAN.md](INSTALL-DEBIAN.md).
+For server setup, see [INSTALL.md](INSTALL.md).
 
 ## Requirements
 
@@ -15,8 +15,10 @@ The client uses three separate elements:
 - a public age recipient identifies the private identity that can decrypt the
   backup.
 
-`age-identity.txt` is the private recovery key. Never store it on the deposit
-server or confuse it with `send.key`.
+`age-identity.txt` is the private recovery key. An upload-only computer needs
+only its public recipient. Keep the identity on a separate trusted recovery
+computer or protected offline storage; never store it on the deposit server or
+confuse it with `send.key`.
 
 For production backups, create a dedicated server profile and credential named
 for the computer or workload. Do not reuse test credentials or share one key
@@ -56,6 +58,7 @@ onlybackup-recover --help
 ```bash
 install -d -m 0700 "$HOME/.config/onlybackup"
 install -d -m 0700 "$HOME/.local/state/onlybackup/receipts"
+install -d -m 0700 "$HOME/.local/state/onlybackup/encrypted-temp"
 ```
 
 Copy these files into the configuration directory:
@@ -73,20 +76,20 @@ install -m 0644 server.crt \
 After verifying the copy, remove the transferable credential file from the
 server. Only its hash remains in the server catalog.
 
-## 3. Create or import the age identity
+## 3. Create the age identity on a recovery computer
 
-If you do not already have a recovery identity:
+If you do not already have a recovery identity, create it on a separate trusted
+computer that has `onlybackup-recover` installed:
 
 ```bash
-onlybackup-recover keygen \
-  --out "$HOME/.config/onlybackup/age-identity.txt" \
-  > "$HOME/.config/onlybackup/age-public.json"
-chmod 0600 "$HOME/.config/onlybackup/age-identity.txt"
+onlybackup-recover keygen --out age-identity.txt > age-public.json
+chmod 0600 age-identity.txt
 ```
 
-Keep a second protected copy of `age-identity.txt`. Encrypted backups cannot be
-recovered if every copy is lost. If a valid identity already exists, do not
-regenerate it; copy its public recipient into the client configuration.
+Keep another protected copy of `age-identity.txt`. Encrypted backups cannot be
+recovered if every copy is lost. Copy only the public recipient from
+`age-public.json` into the upload client's configuration. If a valid identity
+already exists, do not regenerate it.
 
 ## 4. Configure the client
 
@@ -97,12 +100,16 @@ Create `$HOME/.config/onlybackup/client.json`, replacing the URL and recipient:
   "url": "https://backup.example.com:8443",
   "key_file": "send-production.key",
   "ca_file": "server.crt",
-  "encrypt_to": "age1..."
+  "encrypt_to": "age1...",
+  "encrypted_temp_limit_bytes": 107374182400,
+  "encrypted_temp_dir": "../../.local/state/onlybackup/encrypted-temp"
 }
 ```
 
 Relative paths are resolved from the directory containing `client.json`. Omit
 `ca_file` when the certificate is issued by a CA already trusted by the system.
+Select a temporary limit that fits the credential profile and local disk. The
+encrypted output must fit both this limit and the server's per-backup limit.
 
 ```bash
 chmod 0600 "$HOME/.config/onlybackup/client.json"
@@ -122,7 +129,11 @@ onlybackup send \
 ```
 
 The receipt is written only after server confirmation, and only to a new file.
-The client never overwrites an existing receipt.
+The client never overwrites an existing receipt. Before network transmission,
+it creates the complete encrypted file in `encrypted-temp`; allow local space
+slightly larger than the source file. The temporary is removed after normal
+success or a handled error, but a forced termination or power loss can leave a
+private residual file that should be inspected before the next run.
 
 ## 6. Automate uploads with Bash and cron
 
@@ -143,8 +154,9 @@ onlybackup-file \
 ```
 
 The script creates a unique receipt name and delegates encryption, hashing,
-TLS, and upload to the client. A cron entry with absolute paths can look like
-this:
+TLS, and upload to the client. It uses quiet mode, so a long pause while the
+local encrypted temporary grows is expected. A cron entry with absolute paths
+can look like this:
 
 ```cron
 0 2 * * * /usr/bin/flock -n /home/user/.local/state/onlybackup/send.lock /home/user/.local/bin/onlybackup-file /srv/export/accounting.sql /home/user/.config/onlybackup/client.json /home/user/.local/state/onlybackup/receipts "Daily accounting backup" >>/home/user/.local/state/onlybackup/client.log 2>&1
@@ -154,7 +166,7 @@ The process that creates the source file must finish before the upload starts.
 For databases, use an application-consistent dump or snapshot. The release also
 includes `scripts/backup-mysql.sh` for MySQL.
 
-## 7. Test recovery
+## 7. Test recovery on the trusted recovery computer
 
 The API is deposit-only: the client cannot download backups from the server. A
 recovery test requires an independent copy of the `.backup` file, its receipt,
@@ -164,7 +176,7 @@ and the age identity.
 onlybackup-recover \
   --receipt receipt.json \
   --archive BACKUP_ID.backup \
-  --identity-file "$HOME/.config/onlybackup/age-identity.txt" \
+  --identity-file ./age-identity.txt \
   --out recovered-file
 ```
 
@@ -175,8 +187,12 @@ available with `--state DIRECTORY --id ID`.
 ## Checklist
 
 - The credential is unique to this production workload and has mode 0600.
-- The age identity also has a protected copy outside the sending computer.
+- The age identity is protected separately from the upload-only computer.
 - TLS verification is enabled, with no option that bypasses certificate checks.
+- Temporary disk space and the encrypted-size limit are appropriate.
 - Receipts are retained and included in recovery procedures.
 - Automation has been run manually as the same user that runs `cron`.
 - Recovery from an independent copy is tested regularly.
+
+See [OPERATIONS.md](OPERATIONS.md) for monitoring, capacity planning,
+credential rotation, TLS renewal, cold copies, and incident handling.

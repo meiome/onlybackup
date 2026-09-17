@@ -34,7 +34,15 @@ for name in onlybackup onlybackup-admin onlybackup-inspect onlybackup-receiver o
 done
 
 cp README.md LICENSE "$stage/"
-cp docs/CLIENT-DEBIAN.md docs/CLIENT-WINDOWS.md docs/INSTALL-DEBIAN.md docs/INSTALL.md docs/PROTOCOL.md docs/RESTORE-TEST.md docs/SECURITY.md "$stage/docs/"
+cp \
+    docs/CLIENT-DEBIAN.md \
+    docs/CLIENT-WINDOWS.md \
+    docs/INSTALL.md \
+    docs/OPERATIONS.md \
+    docs/PROTOCOL.md \
+    docs/RESTORE-TEST.md \
+    docs/SECURITY.md \
+    "$stage/docs/"
 cp deploy/onlybackup-receiver.service deploy/onlybackup-writer.service "$stage/deploy/"
 cp scripts/backup-file.sh scripts/backup-mysql.sh "$stage/scripts/"
 

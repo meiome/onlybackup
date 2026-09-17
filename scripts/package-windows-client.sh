@@ -32,8 +32,14 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 ./scripts/go.sh build \
     -buildvcs=false -trimpath -o "$stage/bin/onlybackup-recover.exe" ./cmd/onlybackup-recover
 
 cp README.md LICENSE "$stage/"
-cp docs/CLIENT-WINDOWS.md docs/PROTOCOL.md docs/RESTORE-TEST.md docs/SECURITY.md "$stage/docs/"
-cp scripts/backup-file.ps1 "$stage/scripts/"
+cp \
+    docs/CLIENT-WINDOWS.md \
+    docs/OPERATIONS.md \
+    docs/PROTOCOL.md \
+    docs/RESTORE-TEST.md \
+    docs/SECURITY.md \
+    "$stage/docs/"
+cp scripts/backup-file.ps1 scripts/install-windows-client.ps1 "$stage/scripts/"
 
 source_date_epoch=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}
 ./scripts/go.sh run ./scripts/zip-release.go "$stage" "$zip_path" "$source_date_epoch"

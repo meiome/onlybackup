@@ -79,6 +79,28 @@ publishes a new file only after complete verification. Go module dependencies
 are pinned with checksums; this is not equivalent to an independent security
 audit.
 
+Client-side encryption also uses a complete temporary file before upload. A
+handled error removes it, but power loss or forced termination can leave a
+private residual file. Place the temporary directory on NTFS or a private Unix
+directory, monitor its capacity, and inspect residuals without weakening ACLs.
+
+## Operational limits
+
+OnlyBackup does not automatically delete completed backups and has no supported
+retention or pruning command. Quotas reject new deposits when exhausted; they
+do not reclaim space. Manual removal of archive files or catalog rows is
+unsupported and can destroy consistency.
+
+A replacement credential starts a separate per-key quota history. Rotation
+must therefore account for both old and new key usage when sizing physical
+storage. Revocation prevents future deposits but does not remove existing
+backups.
+
+TLS renewal, credential rotation, capacity monitoring, cold copies, and restore
+exercises are operator responsibilities. Follow [OPERATIONS.md](OPERATIONS.md)
+and protect against writer or root compromise with an independent WORM backend
+or offline copy.
+
 ## Reproducible checks
 
 - `make check`: Go test suite, static analysis, and current vulnerability scan.
