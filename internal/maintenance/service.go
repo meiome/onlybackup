@@ -4,9 +4,7 @@ package maintenance
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -329,7 +327,7 @@ func (s *Service) RunOnce(ctx context.Context) (runErr error) {
 		}
 	}
 	if snapshot.Status.NextReportAt == 0 || now.Unix() >= snapshot.Status.NextReportAt {
-		report := buildReport(snapshot, filesystem, findings, now)
+		report := buildEmailReport(snapshot, filesystem, findings, now)
 		request := map[string]any{"stable_id": fmt.Sprintf("report:%d", now.Unix()/int64(72*time.Hour/time.Second)), "subject": "OnlyBackup: report periodico", "body": report}
 		request["periodic"] = true
 		if err = s.call(ctx, "POST", "/v1/report/queue", request, nil); err != nil {
@@ -1038,9 +1036,11 @@ func (sender SMTP) Send(ctx context.Context, settings model.MailSettings, messag
 	if err != nil {
 		return err
 	}
-	stableHash := sha256.Sum256([]byte(message.StableID))
-	body := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMessage-ID: <%s@onlybackup.local>\r\nDate: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s\r\n",
-		settings.From, strings.Join(recipients, ", "), sanitizeHeader(message.Subject), hex.EncodeToString(stableHash[:]), time.Now().Format(time.RFC1123Z), strings.ReplaceAll(message.Body, "\n", "\r\n"))
+	body, err := composeMail(settings.From, recipients, message, time.Now())
+	if err != nil {
+		wc.Close()
+		return err
+	}
 	if _, err = wc.Write([]byte(body)); err != nil {
 		wc.Close()
 		return err
@@ -1213,123 +1213,4 @@ func atomicPrivateFile(path string, data []byte) error {
 	}
 	ok = true
 	return nil
-}
-
-func buildReport(snapshot localclient.Snapshot, filesystem policy.Filesystem, findings []policy.Finding, now time.Time) string {
-	total, used, available, _ := filesystem.Bytes()
-	var quarantined int64
-	operationCounts := make(map[string]int)
-	var pendingBytes int64
-	for _, backup := range snapshot.Backups {
-		if backup.Status == model.BackupQuarantined || backup.Status == model.BackupPurging {
-			quarantined += backup.Size
-		}
-	}
-	backupSizes := make(map[string]int64)
-	for _, backup := range snapshot.Backups {
-		backupSizes[backup.ID] = backup.Size
-	}
-	for _, operation := range snapshot.Operations {
-		operationCounts[operation.Kind+"/"+operation.State]++
-		if operation.State == "requested" || operation.State == "authorized" {
-			pendingBytes += backupSizes[operation.BackupID]
-		}
-	}
-	keys := append([]model.Key(nil), snapshot.Keys...)
-	sort.Slice(keys, func(i, j int) bool { return keys[i].Name < keys[j].Name })
-	var lines []string
-	lines = append(lines, "Stato: "+snapshot.Status.MonitoringState,
-		fmt.Sprintf("Retention abilitata: %t; blocco: %t %s", snapshot.Status.Enabled, snapshot.Status.DeletionBlocked, snapshot.Status.BlockReason),
-		fmt.Sprintf("Filesystem: usati %d di %d byte; disponibili al servizio %d; quarantena %d", used, total, available, quarantined),
-		fmt.Sprintf("Finestra D: %d giorni; soglia: %.2f%%; anomalie attive: %d", snapshot.Status.RetentionDays, float64(snapshot.Status.ThresholdBasis)/100, snapshot.Status.ActiveAnomalies),
-		fmt.Sprintf("Operazioni recenti: quarantine richieste=%d confermate=%d; recover richieste=%d confermate=%d; purge richieste=%d confermate=%d; byte pendenti=%d",
-			operationCounts["quarantine/requested"]+operationCounts["quarantine/authorized"], operationCounts["quarantine/confirmed"],
-			operationCounts["recover/requested"]+operationCounts["recover/authorized"], operationCounts["recover/confirmed"],
-			operationCounts["purge/requested"]+operationCounts["purge/authorized"], operationCounts["purge/confirmed"], pendingBytes))
-	for _, key := range keys {
-		var latest *model.Backup
-		var oldest *model.Backup
-		var copies int
-		for i := range snapshot.Backups {
-			backup := &snapshot.Backups[i]
-			if backup.KeyID != key.ID {
-				continue
-			}
-			if backup.Status != model.BackupDeleted && backup.Status != model.BackupFailed {
-				copies++
-				if oldest == nil || backup.ReceivedAt < oldest.ReceivedAt {
-					oldest = backup
-				}
-			}
-			if backup.ReceivedAt != "" && (latest == nil || backup.ReceivedAt > latest.ReceivedAt) {
-				latest = backup
-			}
-		}
-		last := "nessuno"
-		if latest != nil {
-			last = fmt.Sprintf("%s, %d byte", latest.ReceivedAt, latest.Size)
-		}
-		quotaText := "quota non disponibile"
-		for _, quota := range snapshot.Quotas {
-			if quota.KeyID == key.ID {
-				quotaText = fmt.Sprintf("quota usata=%d prenotata=%d totale=%d", quota.Used, quota.Reserved, quota.Profile.TotalBytes)
-				break
-			}
-		}
-		expected := "previsione non disponibile"
-		actualVariation := "variazione effettiva non disponibile"
-		if raw, ok := snapshot.Models[key.ID]; ok {
-			var learned policy.KeyModel
-			if json.Unmarshal(raw, &learned) == nil {
-				loc, _ := time.LoadLocation(learned.Timezone)
-				if loc == nil {
-					loc = time.UTC
-				}
-				apps := learned.Schedule[now.In(loc).Weekday()]
-				var values []string
-				for _, app := range apps {
-					values = append(values, fmt.Sprintf("%02d:%02d/%d byte crescita=%+.0f byte/giorno", app.MinuteOfDay/60, app.MinuteOfDay%60, app.MedianSize, app.GrowthPerDay))
-				}
-				if len(values) != 0 {
-					expected = "atteso=" + strings.Join(values, ",")
-				}
-				if latest != nil {
-					latestAt, parseErr := time.Parse(time.RFC3339Nano, latest.ReceivedAt)
-					if parseErr == nil {
-						latestApps := learned.Schedule[latestAt.In(loc).Weekday()]
-						bestDistance, median := 24*60, int64(0)
-						minute := latestAt.In(loc).Hour()*60 + latestAt.In(loc).Minute()
-						for _, app := range latestApps {
-							distance := minute - app.MinuteOfDay
-							if distance < 0 {
-								distance = -distance
-							}
-							if distance < bestDistance {
-								bestDistance, median = distance, app.MedianSize
-							}
-						}
-						if median > 0 {
-							actualVariation = fmt.Sprintf("variazione ultimo=%+d byte rispetto alla mediana", latest.Size-median)
-						}
-					}
-				}
-			}
-		}
-		coverage := "nessuna"
-		if oldest != nil && latest != nil {
-			coverage = oldest.ReceivedAt + " .. " + latest.ReceivedAt
-		}
-		missing, extra := 0, 0
-		for _, finding := range findings {
-			if finding.KeyID == key.ID && finding.Kind == "schedule_missing" {
-				missing++
-			}
-			if finding.KeyID == key.ID && finding.Kind == "extra" {
-				extra++
-			}
-		}
-		lines = append(lines, fmt.Sprintf("Chiave %s (%s): ultimo %s; %s; %s; mancanti=%d; avvisi extra non bloccanti=%d; copie recuperabili=%d; copertura=%s; %s; revocata=%t", key.Name, key.ID, last, expected, actualVariation, missing, extra, copies, coverage, quotaText, key.Revoked))
-	}
-	lines = append(lines, fmt.Sprintf("Generato: %s", now.Format(time.RFC3339)))
-	return strings.Join(lines, "\n")
 }

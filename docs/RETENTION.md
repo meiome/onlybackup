@@ -78,6 +78,17 @@ blocking anomaly, and no uncertain operation. Non-blocking extra-copy warnings
 do not prevent it. A legitimate schedule change uses
 `monitoring relearn`; it does not silently widen tolerances.
 
+The 72-hour report and anomaly notices include a short HTML view and a plain
+text alternative. A large green `TUTTO OK` badge means that no anomaly or
+operator action is currently known; the expected initial learning phase is
+shown as information. A red `ATTENZIONE` badge marks anomalies, missing first
+copies, disabled automation, or a regular monitor that still needs an explicit
+`retention resume`. The same status appears at the start of the email subject,
+so the inbox can be scanned without opening a green report. The report lists
+the latest completed copy per active key,
+disk use, retention state, and the next action without exposing key IDs or
+raw quota/model internals. Mail-test messages remain plain text.
+
 ## Automatic policy
 
 Maintenance checks at startup and every five minutes. It learns per key and
