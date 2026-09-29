@@ -37,8 +37,9 @@ func parse(f *flag.FlagSet, args []string) error {
 func Admin(args []string, out, errOut io.Writer) error {
 	global := flags("onlybackup-admin", errOut)
 	root := global.String("state", "./var/onlybackup", "directory locale dell'archivio")
+	adminSocket := global.String("admin-socket", "", "socket Unix amministrativa (default: STATE/admin.sock)")
 	global.Usage = func() {
-		fmt.Fprintln(errOut, "Uso: onlybackup-admin [--state DIR] init | profiles list/set | keys create/list/revoke/assign | backups list/status | quota\nTutte le operazioni sono locali. I comandi di consultazione restituiscono JSON.")
+		fmt.Fprintln(errOut, "Uso: onlybackup-admin [--state DIR] [--admin-socket PATH] init | profiles list/set | keys create/list/revoke/assign | backups list/status | quota | automation setup/status | mail test | retention simulate/enable/pause/resume | monitoring checks/relearn/anomalies/exclusions/acknowledge/exclude | cancellazione | quarantena\nLe mutazioni retention richiedono il writer attivo e mantengono conferme e audit anche da SSH, Mosh, pipe o script.")
 	}
 	if err := global.Parse(args); err != nil {
 		return err
@@ -56,6 +57,12 @@ func Admin(args []string, out, errOut io.Writer) error {
 			return err
 		}
 		return Print(out, map[string]string{"state": *root, "status": "initialized"})
+	}
+	if *adminSocket == "" {
+		*adminSocket = filepath.Join(*root, "admin.sock")
+	}
+	if handled, err := retentionAdmin(args, *root, *adminSocket, out, errOut); handled {
+		return err
 	}
 	readOnly := args[0] == "quota" || len(args) > 1 && (args[1] == "list" || args[0] == "backups")
 	s, err := store.Open(filepath.Join(*root, "metadata.db"), readOnly)

@@ -1,6 +1,6 @@
 # Install and migrate on Debian 13 AMD64
 
-This guide installs the two OnlyBackup services on a dedicated Debian 13
+This guide installs the three OnlyBackup services on a dedicated Debian 13
 server. The procedure is used in production on Debian 13 (`x86_64`, glibc 2.41,
 systemd 257).
 
@@ -39,13 +39,15 @@ available because older Debian packages may not include it.
 ```bash
 gh auth status
 gh attestation --help >/dev/null
-sha256sum --check SHA256SUMS
+test -f onlybackup_VERSION_linux_amd64.tar.gz
+sha256sum --check --ignore-missing SHA256SUMS
 gh attestation verify onlybackup_VERSION_linux_amd64.tar.gz \
   --repo meiome/onlybackup
 ```
 
-Do not install an archive if either verification fails. Extract it only after
-both checks pass:
+Require an explicit `OK` line for the Linux archive. `SHA256SUMS` also lists the
+Windows archive, which need not be present. Do not install an archive if either
+verification fails. Extract it only after both checks pass:
 
 ```bash
 tar -xzf onlybackup_VERSION_linux_amd64.tar.gz
@@ -64,8 +66,8 @@ uname -m
 getconf GNU_LIBC_VERSION
 df -h /var/lib /var/tmp
 systemctl list-unit-files 'onlybackup-*'
-getent passwd onlybackup-writer onlybackup-receiver
-getent group onlybackup-ingest onlybackup-receiver
+getent passwd onlybackup-writer onlybackup-receiver onlybackup-maintenance
+getent group onlybackup-ingest onlybackup-receiver onlybackup-maintenance onlybackup-admin
 ```
 
 This guide expects Debian 13 on `x86_64` with no OnlyBackup units already
@@ -84,12 +86,15 @@ sudo apt-get install --no-install-recommends ca-certificates file openssl
 ```bash
 sudo groupadd --system onlybackup-ingest
 sudo groupadd --system onlybackup-receiver
+sudo groupadd --system onlybackup-maintenance
+sudo groupadd --system onlybackup-admin
 
 sudo useradd \
   --system \
   --no-create-home \
   --shell /usr/sbin/nologin \
-  --gid onlybackup-ingest \
+  --gid onlybackup-maintenance \
+  --groups onlybackup-ingest,onlybackup-admin \
   onlybackup-writer
 
 sudo useradd \
@@ -99,6 +104,13 @@ sudo useradd \
   --gid onlybackup-ingest \
   --groups onlybackup-receiver \
   onlybackup-receiver
+
+sudo useradd \
+  --system \
+  --no-create-home \
+  --shell /usr/sbin/nologin \
+  --gid onlybackup-maintenance \
+  onlybackup-maintenance
 ```
 
 Verify the accounts before continuing:
@@ -106,11 +118,13 @@ Verify the accounts before continuing:
 ```bash
 id onlybackup-writer
 id onlybackup-receiver
+id onlybackup-maintenance
 ```
 
-The writer must belong only to `onlybackup-ingest`. The receiver must use
-`onlybackup-ingest` as its primary group and `onlybackup-receiver` as a
-supplementary group.
+The writer uses `onlybackup-maintenance` as primary group and belongs to the
+ingest and admin socket groups. The receiver belongs only to ingest and its TLS
+group. Maintenance belongs only to its dedicated group and is never added to
+ingest or admin.
 
 ## 4. Install programs and systemd units
 
@@ -123,17 +137,20 @@ sudo install -m 0755 \
   bin/onlybackup-inspect \
   bin/onlybackup-recover \
   bin/onlybackup-receiver \
+  bin/onlybackup-maintenance \
   bin/onlybackup-writer \
   /usr/local/bin/
 
 sudo install -m 0644 \
   deploy/onlybackup-writer.service \
   deploy/onlybackup-receiver.service \
+  deploy/onlybackup-maintenance.service \
   /etc/systemd/system/
 
 sudo systemd-analyze verify \
   /etc/systemd/system/onlybackup-writer.service \
-  /etc/systemd/system/onlybackup-receiver.service
+  /etc/systemd/system/onlybackup-receiver.service \
+  /etc/systemd/system/onlybackup-maintenance.service
 
 sudo systemctl daemon-reload
 ```
@@ -148,13 +165,20 @@ archive that must be preserved.
 ```bash
 sudo install -d \
   -o onlybackup-writer \
-  -g onlybackup-ingest \
+  -g onlybackup-maintenance \
   -m 0700 \
   /var/lib/onlybackup
 
 sudo -u onlybackup-writer \
   /usr/local/bin/onlybackup-admin \
   --state /var/lib/onlybackup init
+
+sudo chown onlybackup-writer:onlybackup-maintenance \
+  /var/lib/onlybackup /var/lib/onlybackup/backups \
+  /var/lib/onlybackup/quarantine /var/lib/onlybackup/maintenance
+sudo chmod 0710 /var/lib/onlybackup
+sudo chmod 0770 /var/lib/onlybackup/backups \
+  /var/lib/onlybackup/quarantine /var/lib/onlybackup/maintenance
 ```
 
 Check ownership and permissions:
@@ -164,11 +188,15 @@ sudo stat -c '%A %a %U:%G %n' \
   /var/lib/onlybackup \
   /var/lib/onlybackup/incoming \
   /var/lib/onlybackup/backups \
+  /var/lib/onlybackup/quarantine \
+  /var/lib/onlybackup/maintenance \
   /var/lib/onlybackup/metadata.db
 ```
 
-The three directories must have mode `0700`, and the database must have mode
-`0600`. Everything must belong to `onlybackup-writer:onlybackup-ingest`.
+The state root is `0710`; `incoming` is writer-only `0700`; `backups`,
+`quarantine`, and `maintenance` are `0770` for the dedicated maintenance group;
+the database and sidecars remain writer-only. Completed backup files are
+`0440` for writer and maintenance. Never grant this group to the receiver.
 
 ## 6. Install the TLS certificate
 
@@ -178,6 +206,19 @@ Install the certificate and private key obtained from your CA:
 sudo install -d -o root -g onlybackup-receiver -m 0750 /etc/onlybackup
 sudo install -o root -g onlybackup-receiver -m 0640 server.crt /etc/onlybackup/server.crt
 sudo install -o root -g onlybackup-receiver -m 0640 server.key /etc/onlybackup/server.key
+```
+
+Keep maintenance mail secrets in a separate directory. This lets maintenance
+traverse only its configuration path and does not grant it access to the TLS
+private key:
+
+```bash
+sudo install -d -o root -g onlybackup-maintenance -m 0750 \
+  /etc/onlybackup-maintenance
+sudo install -o onlybackup-maintenance -g onlybackup-maintenance -m 0600 /dev/null \
+  /etc/onlybackup-maintenance/mail-credentials.json
+sudo install -o root -g onlybackup-maintenance -m 0640 /dev/null \
+  /etc/onlybackup-maintenance/maintenance.env
 ```
 
 Check the validity dates and Subject Alternative Name. The SAN must contain the
@@ -243,17 +284,20 @@ from the server. Only the credential hash remains in the catalog.
 ```bash
 sudo systemctl enable --now \
   onlybackup-writer.service \
-  onlybackup-receiver.service
+  onlybackup-receiver.service \
+  onlybackup-maintenance.service
 
 sudo systemctl status \
   onlybackup-writer.service \
   onlybackup-receiver.service \
+  onlybackup-maintenance.service \
   --no-pager
 
 sudo ss -ltnp 'sport = :8443'
 sudo journalctl \
   -u onlybackup-writer.service \
   -u onlybackup-receiver.service \
+  -u onlybackup-maintenance.service \
   --since '-10 minutes' \
   --no-pager
 ```
@@ -263,6 +307,8 @@ Also verify that the receiver cannot traverse or read the state directory:
 ```bash
 sudo -u onlybackup-receiver test ! -x /var/lib/onlybackup
 sudo -u onlybackup-receiver test ! -r /var/lib/onlybackup/metadata.db
+sudo -u onlybackup-maintenance test ! -r /var/lib/onlybackup/metadata.db
+sudo -u onlybackup-maintenance test ! -x /var/lib/onlybackup/incoming
 ```
 
 Allow TCP port 8443 through the firewall only from networks or addresses that
@@ -305,7 +351,7 @@ onlybackup send \
 ```
 
 On the server, verify that the ID, size, and SHA-256 digest match the receipt
-and that the backup file has mode `0400`:
+and that the backup file has mode `0440`:
 
 ```bash
 sudo -u onlybackup-writer \
@@ -333,6 +379,7 @@ vault, then verify that every removal target belongs exclusively to OnlyBackup:
 ```bash
 sudo systemctl disable --now \
   onlybackup-receiver.service \
+  onlybackup-maintenance.service \
   onlybackup-writer.service
 sudo systemctl disable --now onlybackup-vault.service 2>/dev/null || true
 
@@ -358,29 +405,75 @@ Schedule a maintenance window and:
    has the state open.
 2. Create and verify a cold copy of the complete state, including
    `metadata.db-wal` and `metadata.db-shm` when present.
-3. Install all six current programs and both current systemd units together.
-4. Recursively assign the state to
-   `onlybackup-writer:onlybackup-ingest`, keeping directories at `0700`, the
-   database at `0600`, and completed backups at `0400`.
+3. Install all seven current programs and three current systemd units together.
+4. Create the admin and maintenance groups/accounts, initialize the fixed
+   `quarantine` and `maintenance` directories, and apply the ownership/modes
+   from section 5. Before changing existing files, reject links and unexpected
+   file types, then change only the ID-derived backup files:
+
+   ```bash
+   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+     -xdev -mindepth 1 \( -type l -o -type d -o \! -type f \) -print
+   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+     -xdev -type f \! -name '*.backup' -print
+   ```
+
+   Both commands must produce no output. With all OnlyBackup services still
+   stopped, apply and verify the migration:
+
+   ```bash
+   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+     -xdev -type f -name '*.backup' \
+     -exec chown onlybackup-writer:onlybackup-maintenance -- {} +
+   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+     -xdev -type f -name '*.backup' -exec chmod 0440 -- {} +
+   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+     -xdev -type f -name '*.backup' \
+     \( \! -user onlybackup-writer -o \! -group onlybackup-maintenance -o \! -perm 0440 \) -print
+   ```
+
+   The final command must produce no output. Keep SQLite at `0600`; never
+   change its group to the maintenance account.
 5. Remove ACLs and groups that granted access to the old vault, disable and
    remove `onlybackup-vault.service`, and reload systemd.
-6. Start the writer and receiver, then verify a replay, a new upload, catalog
-   inspection, and recovery from the independent copy.
+6. Start writer, receiver, and maintenance, then verify a replay, a new upload,
+   catalog inspection, automation status, and recovery from the independent copy.
 
 Never run the old vault and the current writer against the same archive. The
 writer lock does not replace an orderly shutdown and process check.
 
 ## SQLite schema and existing archives
 
-Current programs open v1, v2, v3, and v4 catalogs read-only. The first write
-access upgrades an older catalog transactionally to v4, progressively adding
-the content format, idempotency key, and rolling attempt history.
+Current programs open v1 through v9 catalogs read-only. The first write access
+upgrades an older catalog transactionally to v9. Before the v4-to-v5
+transaction it checkpoints SQLite and creates the reserved
+`metadata.db.v4.cold-copy`. Schema v5 adds retention states and audit, models,
+anomalies, persistent mail, and the maintenance lease. Schema v6 adds audited
+anomaly exclusions and enforces a single active retention operation per backup.
+Schema v7 adds the monitoring attempt history and per-key/model coverage used
+to resume checks after a stop. The v6-to-v7 step preserves backups, models,
+anomalies, blocks, and operations and starts with an empty check history;
+automation remains in its existing enabled and blocked state.
+Schema v8 adds a monotonic generation to the maintenance lease and records the
+generation that authorized each operation ticket. The v7-to-v8 step
+invalidates the legacy lease because an older worker cannot identify its
+generation. Requested operations receive the new generation when authorized;
+authorized v7 operations are physically reconciled before they can continue.
+Backups, anomalies, models, monitoring history, and retention blocks are
+preserved.
+
+Schema v9 adds a durable `execution_committed` marker. The v8-to-v9 step leaves
+existing operation tickets provisional; it does not infer final permission for
+old work. After a current final validation commits this marker, later revocation
+or policy changes cannot cancel that one operation. Quarantine and purge each
+require their own final permission. Recent migrations preserve existing
+enablement and retention blocks.
 
 The v3-to-v4 migration imports the one attempt reconstructable from
 `backups.started_at`; older retries that were already overwritten cannot be
 reconstructed. Existing backup files are not changed or re-encrypted.
 
-Do not open a v4 catalog with older programs. There is no automatic downgrade;
+Do not open a v9 catalog with older programs. There is no automatic downgrade;
 rollback requires the complete verified copy made before the upgrade.
 
 ## Upgrade
@@ -388,21 +481,32 @@ rollback requires the complete verified copy made before the upgrade.
 Before upgrading, verify the new release as described in step 1 and create a
 complete cold copy of the state. Then:
 
-1. Stop the receiver and writer.
-2. Install all six programs and both systemd units from the new release.
+1. Stop the receiver, maintenance, and writer; confirm that no old maintenance
+   process still runs. Old maintenance binaries do not hold the execution lock.
+2. Install all seven programs and three systemd units from the new release;
+   create the maintenance/admin groups and apply the directory ownership above.
 3. Run `systemd-analyze verify` and `systemctl daemon-reload`.
-4. Start the writer and receiver.
+4. Start the writer, receiver, and maintenance service.
 5. Check the units, port, journal, a new upload, and recovery.
 
 Do not run `init` again, delete the state, or open an upgraded catalog with
 older programs. Use the dedicated sections above for a clean reinstall or
 migration from an older vault-based architecture.
 
+For a first retention configuration, follow [RETENTION.md](RETENTION.md) to
+configure mail, queue its test, wait for the persisted delivery confirmation,
+observe learning, simulate, and explicitly enable retention. On an archive
+already configured for retention, inspect `automation status` after the upgrade:
+the migration preserves its enablement and blocks, and does not automatically
+disable existing automation. Do not run `automation setup` as a diagnostic
+command: it resets enablement, mail proof, and learning, and rejects pending
+retention operations.
+
 ## Completion criteria
 
 The installation is ready when:
 
-- the writer and receiver are active and enabled;
+- writer, receiver, and maintenance are active and enabled;
 - port 8443 is listening and TLS validates the client URL hostname;
 - the receiver cannot read the archive or catalog;
 - no transferable copy of the credential remains on the server;

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 
+	"github.com/meiome/onlybackup/internal/model"
 	"github.com/meiome/onlybackup/internal/store"
 )
 
@@ -20,8 +21,18 @@ func targetFromState(root, id string) (recoveryTarget, error) {
 	if err != nil {
 		return target, err
 	}
-	if backup.Status != "complete" {
-		return target, errors.New("backup non completato")
+	switch backup.Status {
+	case model.BackupComplete:
+	case model.BackupDeleting:
+		return target, errors.New("backup con richiesta di quarantena pendente; annullarla dalla console amministrativa")
+	case model.BackupQuarantined:
+		return target, errors.New("backup recuperabile dalla quarantena tramite onlybackup-admin quarantena")
+	case model.BackupPurging:
+		return target, errors.New("backup in eliminazione definitiva; recupero non disponibile")
+	case model.BackupDeleted:
+		return target, errors.New("backup eliminato definitivamente; rimane solo lo storico di catalogo")
+	default:
+		return target, errors.New("backup non disponibile per il recupero")
 	}
 	return recoveryTarget{
 		ID:            backup.ID,

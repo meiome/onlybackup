@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-sqlite3"
+	"github.com/meiome/onlybackup/internal/backupfile"
 	"github.com/meiome/onlybackup/internal/model"
 	"github.com/meiome/onlybackup/internal/store"
 )
@@ -165,6 +166,8 @@ func AdmissionError(err error) (int, string) {
 		return http.StatusInsufficientStorage, err.Error()
 	case errors.Is(err, model.ErrIdempotencyConflict), errors.Is(err, model.ErrIdempotencyInProgress):
 		return http.StatusConflict, err.Error()
+	case errors.Is(err, model.ErrIdempotencyUnavailable):
+		return http.StatusGone, err.Error()
 	case errors.Is(err, ErrBusy):
 		return http.StatusServiceUnavailable, err.Error()
 	default:
@@ -239,7 +242,9 @@ func (a *Writer) Receive(w http.ResponseWriter, body io.Reader, upload *Admissio
 		Error(w, 422, "integrità del file non verificata")
 		return
 	}
-	if err = f.Chmod(0400); err == nil {
+	// The dedicated maintenance group may read identity and move the file;
+	// receiver processes are deliberately not members of that group.
+	if err = f.Chmod(0440); err == nil {
 		err = f.Sync()
 	}
 	closeErr := f.Close()
@@ -427,18 +432,5 @@ func (a *Writer) Reconcile() error {
 	return SyncDir(filepath.Join(a.Root, "incoming"))
 }
 func Verify(path string, size int64, digest string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	h := sha256.New()
-	n, err := io.Copy(h, f)
-	if err != nil {
-		return err
-	}
-	if n != size || hex.EncodeToString(h.Sum(nil)) != digest {
-		return errors.New("dimensione o SHA-256 non corrispondenti")
-	}
-	return nil
+	return backupfile.Verify(path, size, digest)
 }

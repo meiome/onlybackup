@@ -70,10 +70,11 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 	state := filepath.Join(root, "archive")
 	writerRun := filepath.Join(root, "writer-run")
 	writerSock := filepath.Join(writerRun, "writer.sock")
-	var writerID, receiverID *syscall.Credential
+	var writerID, receiverID, maintenanceID *syscall.Credential
 	if isolated {
-		writerID = &syscall.Credential{Uid: 12001, Gid: 12004}
+		writerID = &syscall.Credential{Uid: 12001, Gid: 12007, Groups: []uint32{12004, 12008}}
 		receiverID = &syscall.Credential{Uid: 12005, Gid: 12004}
+		maintenanceID = &syscall.Credential{Uid: 12006, Gid: 12007}
 	}
 	dir := func(path string, mode os.FileMode, owner *syscall.Credential) {
 		t.Helper()
@@ -87,7 +88,7 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 		}
 	}
 	dir(state, 0700, writerID)
-	dir(writerRun, 0750, writerID)
+	dir(writerRun, 0755, writerID)
 	command := func(owner *syscall.Credential, name string, args ...string) *exec.Cmd {
 		c := exec.Command(filepath.Join(bin, name), args...)
 		if owner != nil {
@@ -104,6 +105,20 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 		return out
 	}
 	run(writerID, "onlybackup-admin", "--state", state, "init")
+	if isolated {
+		if err := os.Chmod(state, 0710); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"backups", "quarantine", "maintenance"} {
+			path := filepath.Join(state, name)
+			if err := os.Chown(path, int(writerID.Uid), int(maintenanceID.Gid)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0770); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	sendKey := filepath.Join(state, "send.key")
 	keyOut := run(writerID, "onlybackup-admin", "--state", state, "keys", "create", "--name", "system", "--profile", "XS", "--out", sendKey)
 	var keyInfo struct {
@@ -153,8 +168,20 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 		}
 		t.Fatalf("socket did not start: %s", path)
 	}
-	writer := start(writerID, "onlybackup-writer", "--state", state, "--socket", writerSock, "--reserve-free", "0")
+	writerArgs := []string{"--state", state, "--socket", writerSock, "--admin-socket", filepath.Join(writerRun, "admin.sock"), "--maintenance-socket", filepath.Join(writerRun, "maintenance.sock"), "--reserve-free", "0"}
+	if isolated {
+		writerArgs = append(writerArgs, "--ingest-group", "12004", "--admin-user", "12001", "--admin-group", "12008", "--maintenance-user", "12006", "--maintenance-group", "12007")
+	}
+	writer := start(writerID, "onlybackup-writer", writerArgs...)
 	waitSocket(writerSock)
+	adminStatus := run(writerID, "onlybackup-admin", "--state", state, "--admin-socket", filepath.Join(writerRun, "admin.sock"), "automation", "status")
+	var automationStatus struct {
+		DeletionBlocked bool `json:"deletion_blocked"`
+	}
+	if err := json.Unmarshal(adminStatus, &automationStatus); err != nil || !automationStatus.DeletionBlocked {
+		t.Fatalf("admin CLI did not read writer state: %v %s", err, adminStatus)
+	}
+	run(maintenanceID, "onlybackup-maintenance", "--state", state, "--socket", filepath.Join(writerRun, "maintenance.sock"), "--once")
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -260,6 +287,14 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 			t.Fatalf("receiver isolation: %v\n%s", err, out)
 		}
 		t.Log("receiver cannot read, chmod, replace or delete archive/catalogue")
+		maintenanceProbe := exec.Command(exe, "-test.run=^TestMaintenanceBoundaries$", "-test.v")
+		maintenanceProbe.SysProcAttr = &syscall.SysProcAttr{Credential: maintenanceID}
+		maintenanceProbe.Env = append(os.Environ(), "ONLYBACKUP_MAINTENANCE_PROBE="+state, "ONLYBACKUP_PROBE_ID="+ids["plain"], "ONLYBACKUP_ADMIN_SOCKET="+filepath.Join(writerRun, "admin.sock"))
+		out, err = maintenanceProbe.CombinedOutput()
+		if err != nil {
+			t.Fatalf("maintenance isolation: %v\n%s", err, out)
+		}
+		t.Log("maintenance can operate through its socket but cannot read SQLite, incoming, or admin socket")
 	}
 	run(writerID, "onlybackup-admin", "--state", state, "keys", "revoke", "--id", keyInfo.ID)
 	if err := command(nil, "onlybackup", "send", "--quiet", "--url", url, "--key-file", sendKey, "--ca-file", cert, "--description", "revoked", input).Run(); err == nil {
@@ -285,13 +320,37 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 		}
 	}
 	// A fresh writer must reconcile the original archive without losing old data.
-	writer2 := start(writerID, "onlybackup-writer", "--state", state, "--socket", writerSock, "--reserve-free", "0")
+	writer2 := start(writerID, "onlybackup-writer", writerArgs...)
 	waitSocket(writerSock)
 	writer2.stop(t)
 	for _, id := range ids {
 		run(nil, "onlybackup-recover", "--state", state, "--id", id)
 	}
 	t.Log("clear/encrypted deposits, revocation, restart and cold catalogue recovery passed")
+}
+
+func TestMaintenanceBoundaries(t *testing.T) {
+	state := os.Getenv("ONLYBACKUP_MAINTENANCE_PROBE")
+	if state == "" {
+		t.Skip("only executed as maintenance subprocess")
+	}
+	if file, err := os.Open(filepath.Join(state, "metadata.db")); err == nil {
+		file.Close()
+		t.Fatal("maintenance read SQLite")
+	}
+	if entries, err := os.ReadDir(filepath.Join(state, "incoming")); err == nil {
+		t.Fatalf("maintenance traversed incoming: %v", entries)
+	}
+	backup := filepath.Join(state, "backups", os.Getenv("ONLYBACKUP_PROBE_ID")+".backup")
+	if file, err := os.Open(backup); err != nil {
+		t.Fatalf("maintenance cannot verify backup: %v", err)
+	} else {
+		file.Close()
+	}
+	if conn, err := net.Dial("unix", os.Getenv("ONLYBACKUP_ADMIN_SOCKET")); err == nil {
+		conn.Close()
+		t.Fatal("maintenance opened admin socket")
+	}
 }
 
 func TestArchiveDenied(t *testing.T) {

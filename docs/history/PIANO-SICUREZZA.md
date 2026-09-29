@@ -2,7 +2,7 @@
 
 > **Documento storico.** Conserva il piano approvato l'11 settembre 2026,
 > compresa la successiva architettura con vault, ma non descrive la versione
-> corrente a due processi. Per le garanzie e le istruzioni correnti leggere
+> corrente con receiver, writer e maintenance. Per le garanzie e le istruzioni correnti leggere
 > [SECURITY](../SECURITY.md) e [INSTALL](../INSTALL.md).
 
 Data: 11 settembre 2026.

@@ -8,7 +8,9 @@ recovers both files locally, and imports them into a second temporary database.
 It checks the data, UTF-8 characters, aggregate amounts, and foreign-key
 constraint.
 
-The test requires built project programs, Bash, OpenSSL, curl, Python 3, and
+Run `make mysql-test` from a source checkout with the Makefile and test script;
+the release archive does not include this test harness. The test requires built
+project programs, Bash, OpenSSL, curl, Python 3, and
 MariaDB with `mariadbd`, `mariadb-install-db`, `mariadb`, and `mysqldump` in the
 Debian paths used by the script. Run:
 
@@ -26,6 +28,13 @@ databases from the host.
 The receiver and writer run as the same user during this MariaDB test. The
 dedicated isolation test separately verifies distinct UIDs and rejection of
 receiver operations against the archive.
+
+For an offline recovery exercise, a receipt and its matching `.backup` file
+can be passed directly to `onlybackup-recover`; a complete Linux state copy also
+supports `--state DIRECTORY --id ID` for a catalog row still marked `complete`.
+The latter does not recover a quarantined, purging, or deleted row. A live
+quarantine restore requires the administrative console and running services;
+when testing a cold copy, inspect its files and use receipt/file recovery.
 
 The exit trap stops only the process IDs started by the script and removes only
 its own `/tmp/onlybackup-mysql-restore.*` directory. Set

@@ -467,7 +467,7 @@ PRAGMA user_version=1;
 			t.Fatal(err)
 		}
 		var version int
-		if err = migrated.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 4 {
+		if err = migrated.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 9 {
 			t.Fatalf("schema version after migration: %d %v", version, err)
 		}
 		backup, err = migrated.Backup("00112233445566778899aabbccddeeff")
@@ -526,7 +526,7 @@ func TestVersionThreeReadonlyCompatibilityAndRepeatableMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec("DROP TABLE upload_attempts; PRAGMA user_version=3"); err != nil {
+	if _, err = db.Exec("DROP TABLE monitoring_check_models; DROP TABLE monitoring_checks; DROP TABLE upload_attempts; PRAGMA user_version=3"); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Close(); err != nil {
@@ -561,5 +561,109 @@ func TestVersionThreeReadonlyCompatibilityAndRepeatableMigration(t *testing.T) {
 		if openErr = migrated.Close(); openErr != nil {
 			t.Fatal(openErr)
 		}
+	}
+}
+
+func TestVersionSevenMigrationAddsGenerationAndInvalidatesLegacyLease(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	if err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "metadata.db")
+	legacy, err := Open(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := legacy.CreateKey("v7 lease migration", "XS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	old := completedBackup(t, legacy, token, "v7-migration-old-123456", now.AddDate(0, 0, -10))
+	_ = completedBackup(t, legacy, token, "v7-migration-new-123456", now.AddDate(0, 0, -1))
+	enableRetentionForTest(t, legacy, now)
+	lease, err := legacy.AcquireMaintenanceLease("legacy-worker", 0, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested, err := legacy.RequestQuarantine(old.ID, "automatic", "legacy-worker", "v7 migration", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorized, err := legacy.AuthorizeOperation(requested.ID, lease, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE maintenance_leases SET owner='legacy-worker',expires_at=4102444800 WHERE id=1;
+ALTER TABLE retention_operations DROP COLUMN lease_generation;
+ALTER TABLE retention_operations DROP COLUMN execution_committed;
+ALTER TABLE maintenance_leases DROP COLUMN generation;
+PRAGMA user_version=7`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := Open(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err = migrated.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 9 {
+		t.Fatalf("versione migrata: %d %v", version, err)
+	}
+	var owner string
+	var generation, expiresAt int64
+	if err = migrated.db.QueryRow(`SELECT owner,generation,expires_at FROM maintenance_leases WHERE id=1`).Scan(&owner, &generation, &expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	if owner != "" || generation != 0 || expiresAt != 0 {
+		t.Fatalf("lease legacy non invalidata: owner=%q generation=%d expires=%d", owner, generation, expiresAt)
+	}
+	for table, column := range map[string]string{"maintenance_leases": "generation", "retention_operations": "lease_generation"} {
+		var count int
+		if err = migrated.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, table, column).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("colonna %s.%s: count=%d err=%v", table, column, count, err)
+		}
+	}
+	preserved, err := migrated.Operation(authorized.ID)
+	if err != nil || preserved.State != "authorized" || preserved.LeaseGeneration != 0 {
+		t.Fatalf("operazione v7 non preservata per riconciliazione: %+v %v", preserved, err)
+	}
+	var integrity string
+	if err = migrated.db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+		t.Fatalf("integrity_check: %q %v", integrity, err)
+	}
+	rows, err := migrated.db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows.Next() {
+		rows.Close()
+		t.Fatal("foreign_key_check ha trovato violazioni")
+	}
+	if err = rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = migrated.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	preserved, err = reopened.Operation(authorized.ID)
+	if err != nil || preserved.State != "authorized" || preserved.LeaseGeneration != 0 {
+		t.Fatalf("operazione persa alla seconda apertura: %+v %v", preserved, err)
 	}
 }

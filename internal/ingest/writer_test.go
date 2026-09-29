@@ -93,7 +93,7 @@ func TestDepositDuplicateNamesAndForbiddenOperations(t *testing.T) {
 			t.Fatal(string(got), err)
 		}
 		info, _ := os.Stat(path)
-		if info.Mode().Perm() != 0400 {
+		if info.Mode().Perm() != 0440 {
 			t.Fatal(info.Mode())
 		}
 		b, _ := a.Store.Backup(receipt.ID)

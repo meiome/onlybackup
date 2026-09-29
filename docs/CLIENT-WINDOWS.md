@@ -11,6 +11,8 @@ and administrative tools remain Linux-only. Continuous integration tests the
 clients on Windows Server 2022. Validate other 64-bit Windows editions,
 including Windows Server 2019, with a manual upload and recovery test before
 production use.
+The ZIP includes the guides linked by its README, including Linux server and
+retention guides for administrators.
 
 Use an NTFS volume for configuration, temporary encrypted files, receipts, and
 recovery output. Private ACLs and no-overwrite file creation depend on NTFS
@@ -43,15 +45,24 @@ Use a current GitHub CLI with attestation support. Authenticate it if requested,
 then run these commands in PowerShell from the download directory:
 
 ```powershell
-Get-FileHash .\onlybackup_VERSION_windows_amd64.zip -Algorithm SHA256
-Get-Content .\SHA256SUMS
+$archive = "onlybackup_VERSION_windows_amd64.zip"
+$checksumLines = @(Get-Content .\SHA256SUMS | Where-Object {
+  $_.EndsWith("  $archive")
+})
+if ($checksumLines.Count -ne 1) { throw "Expected exactly one checksum for $archive" }
+$expected = $checksumLines[0].Substring(0, 64)
+if ($expected -notmatch '^[0-9a-fA-F]{64}$') { throw "Invalid checksum entry" }
+$actual = (Get-FileHash ".\$archive" -Algorithm SHA256).Hash
+if ($actual -ne $expected) { throw "Archive checksum mismatch" }
 gh attestation verify .\onlybackup_VERSION_windows_amd64.zip `
   --repo meiome/onlybackup
 ```
 
-The digest must match the corresponding line in `SHA256SUMS`, and attestation
-verification must succeed. Verification may instead be performed on a trusted
-staging computer before the package is transferred to an isolated server.
+The command requires exactly one matching checksum entry, a matching digest,
+and successful attestation verification. The checksum file also lists the Linux
+archive, which need not be downloaded here. Verification may instead be
+performed on a trusted staging computer before the package is transferred to
+an isolated server.
 Extract the archive only after both checks pass:
 
 ```powershell

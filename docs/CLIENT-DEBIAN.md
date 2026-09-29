@@ -30,11 +30,15 @@ Download the Linux archive and `SHA256SUMS` from the same release. Verify the
 checksum and attestation before extracting it:
 
 ```bash
-sha256sum --check SHA256SUMS
+test -f onlybackup_VERSION_linux_amd64.tar.gz
+sha256sum --check --ignore-missing SHA256SUMS
 gh attestation verify onlybackup_VERSION_linux_amd64.tar.gz \
   --repo meiome/onlybackup
 tar -xzf onlybackup_VERSION_linux_amd64.tar.gz
 ```
+
+Require an explicit `OK` line for the downloaded Linux archive. The checksum
+file also lists the Windows archive, which need not be downloaded here.
 
 Install the programs for the current user:
 
@@ -159,10 +163,13 @@ local encrypted temporary grows is expected. A cron entry with absolute paths
 can look like this:
 
 ```cron
-0 2 * * * /usr/bin/flock -n /home/user/.local/state/onlybackup/send.lock /home/user/.local/bin/onlybackup-file /srv/export/accounting.sql /home/user/.config/onlybackup/client.json /home/user/.local/state/onlybackup/receipts "Daily accounting backup" >>/home/user/.local/state/onlybackup/client.log 2>&1
+0 2 * * * ONLYBACKUP_CLIENT=/home/user/.local/bin/onlybackup /usr/bin/flock -n /home/user/.local/state/onlybackup/send.lock /home/user/.local/bin/onlybackup-file /srv/export/accounting.sql /home/user/.config/onlybackup/client.json /home/user/.local/state/onlybackup/receipts "Daily accounting backup" >>/home/user/.local/state/onlybackup/client.log 2>&1
 ```
 
-The process that creates the source file must finish before the upload starts.
+Replace `/home/user` with the actual account home. `backup-file.sh` invokes
+`onlybackup` through `PATH` unless `ONLYBACKUP_CLIENT` names its absolute path;
+cron often omits `$HOME/.local/bin` from `PATH`. The process that creates the
+source file must finish before the upload starts.
 For databases, use an application-consistent dump or snapshot. The release also
 includes `scripts/backup-mysql.sh` for MySQL.
 
@@ -183,6 +190,12 @@ onlybackup-recover \
 Compare the recovered file with the original or validate it with the relevant
 application. Recovery directly from a complete copy of the Linux state is also
 available with `--state DIRECTORY --id ID`.
+
+The state option accepts only a catalog row marked `complete`. For a pending
+quarantine request, cancel it in the live administrative console; a quarantined
+file needs a live administrative restore before purge. `purging` and `deleted`
+cannot be recovered through the state option. On an offline copy, inspect the
+copied file and use the receipt/file form above without requiring live services.
 
 ## Checklist
 

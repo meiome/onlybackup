@@ -10,14 +10,19 @@ explicit choice. The receiver and writer run as separate Linux users, so the
 public receiver cannot access the archive.
 
 ```text
-client -> HTTPS receiver -> Unix socket -> writer -+- .backup file
-                                                   `- SQLite catalog
+client -> HTTPS receiver -> deposit socket -> writer -+- .backup file
+                                                       `- SQLite catalog
+local admin ---------------------> admin socket -------'
+maintenance <---------------- maintenance socket -----'
+    `-> monitoring, SMTP, quarantine/recovery/purge
 ```
 
-> **Status:** stable and running in production. The automated test suite, race
-> detector, system tests, and isolation tests cover the supported workflow. The
-> supplied systemd services have been deployed on a dedicated Debian 13 AMD64
-> server.
+> **Status:** the deposit path is running in production. Retention changes in
+> this repository must be checked against the installed version; local tests do
+> not establish that they have been released or deployed. Go, race, smoke,
+> system, and isolation tests passed for the documented retention worktree.
+> The release workflow runs `make check` and `make race`; other targets require
+> separate runs.
 
 ## Build and test from source
 
@@ -53,7 +58,8 @@ After downloading an archive and `SHA256SUMS` from the same release, verify them
 before extracting or running anything:
 
 ```bash
-sha256sum --check SHA256SUMS
+test -f onlybackup_VERSION_linux_amd64.tar.gz
+sha256sum --check --ignore-missing SHA256SUMS
 gh attestation verify onlybackup_VERSION_linux_amd64.tar.gz \
   --repo meiome/onlybackup
 ```
@@ -69,7 +75,9 @@ tar -xzf onlybackup_VERSION_linux_amd64.tar.gz
 cd onlybackup_VERSION_linux_amd64
 ```
 
-The checksum detects accidental changes. The attestation links the archive to
+Require an explicit `OK` line for the downloaded Linux archive. The checksum
+file also lists the Windows archive, which need not be present. The checksum
+detects accidental changes. The attestation links the archive to
 the workflow and commit that produced it; it is not a guarantee that the
 software has no vulnerabilities.
 
@@ -79,8 +87,9 @@ For a new server, upgrade, or migration, follow the single
 [installation guide](docs/INSTALL.md). Separate guides cover
 [Debian clients](docs/CLIENT-DEBIAN.md) and
 [native Windows clients](docs/CLIENT-WINDOWS.md), including Bash and PowerShell
-automation. Use the [operations runbook](docs/OPERATIONS.md) for monitoring,
-capacity, credential rotation, TLS renewal, cold copies, and recovery exercises.
+automation. Use the [operations runbook](docs/OPERATIONS.md) for recurring work
+and the [retention guide](docs/RETENTION.md) for monitoring, mail, simulation,
+quarantine, recovery, and persistent anomaly blocks.
 
 A client configuration looks like this:
 
@@ -108,8 +117,16 @@ readable content. OnlyBackup accepts files that have already been prepared; use
 - [Debian client](docs/CLIENT-DEBIAN.md)
 - [Native Windows client](docs/CLIENT-WINDOWS.md)
 - [Production operations](docs/OPERATIONS.md)
+- [Monitoring and retention](docs/RETENTION.md)
 - [Security model](docs/SECURITY.md)
 - [Public protocol](docs/PROTOCOL.md)
 - [Restore testing](docs/RESTORE-TEST.md)
+
+Retention grants durable permission for one physical operation at final
+validation. Revocation blocks new permissions but does not cancel committed
+work; quarantine and purge need separate permissions. Manual pause has a known
+limitation: a later anomaly exclusion can clear its block, so operators must
+recheck the effective status. See the retention guide for recovery after a
+crash and for the remaining safety limits.
 
 Licensed under the [GNU AGPL-3.0](LICENSE).

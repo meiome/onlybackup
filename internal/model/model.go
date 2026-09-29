@@ -34,6 +34,13 @@ var ErrConcurrent = errors.New("numero massimo di upload simultanei raggiunto")
 var ErrDisk = errors.New("spazio libero del server insufficiente")
 var ErrIdempotencyConflict = errors.New("chiave di idempotenza gia usata per un deposito diverso")
 var ErrIdempotencyInProgress = errors.New("deposito con la stessa chiave di idempotenza ancora in corso")
+var ErrIdempotencyUnavailable = errors.New("deposito gia sottoposto a retention e non piu disponibile; usare una nuova chiave di idempotenza")
+var ErrRetentionBlocked = errors.New("cancellazioni sospese")
+var ErrCurrentDay = errors.New("i backup della giornata corrente non possono essere cancellati")
+var ErrLastCopy = errors.New("l'ultima copia disponibile della sorgente non puo essere cancellata")
+var ErrTooEarly = errors.New("quarantena minima di 48 ore non ancora trascorsa")
+var ErrTicket = errors.New("ticket di manutenzione non valido, scaduto o riferito a un'altra operazione")
+var ErrLease = errors.New("lease di manutenzione scaduta, persa o riferita a un'altra acquisizione")
 
 type Metadata struct {
 	Description  string `json:"description"`
@@ -220,8 +227,135 @@ type Backup struct {
 	KeyID          string `json:"key_id"`
 	IdempotencyKey string `json:"-"`
 	Metadata
-	StartedAt int64  `json:"started_at_unix"`
-	Failure   string `json:"failure,omitempty"`
+	StartedAt      int64  `json:"started_at_unix"`
+	Failure        string `json:"failure,omitempty"`
+	QuarantinedAt  int64  `json:"quarantined_at_unix,omitempty"`
+	PurgeNotBefore int64  `json:"purge_not_before_unix,omitempty"`
+	PurgedAt       int64  `json:"purged_at_unix,omitempty"`
+}
+
+const (
+	BackupReceiving   = "receiving"
+	BackupComplete    = "complete"
+	BackupFailed      = "failed"
+	BackupDeleting    = "deleting"
+	BackupQuarantined = "quarantined"
+	BackupPurging     = "purging"
+	BackupDeleted     = "deleted"
+)
+
+const (
+	MonitoringLearning = "APPRENDIMENTO"
+	MonitoringRegular  = "REGOLARE"
+	MonitoringAnomaly  = "ANOMALIA"
+	MonitoringPaused   = "SOSPESO"
+)
+
+type AutomationStatus struct {
+	Enabled         bool   `json:"enabled"`
+	MailTested      bool   `json:"mail_tested"`
+	MonitoringState string `json:"monitoring_state"`
+	DeletionBlocked bool   `json:"deletion_blocked"`
+	BlockReason     string `json:"block_reason,omitempty"`
+	Timezone        string `json:"timezone"`
+	RetentionDays   int    `json:"retention_days"`
+	ThresholdBasis  int    `json:"threshold_basis_points"`
+	ReserveFree     int64  `json:"reserve_free_bytes"`
+	ModelRevision   int64  `json:"model_revision"`
+	LastCheckAt     int64  `json:"last_check_at_unix,omitempty"`
+	NextReportAt    int64  `json:"next_report_at_unix,omitempty"`
+	ActiveAnomalies int    `json:"active_anomalies"`
+}
+
+type RetentionOperation struct {
+	ID                 int64  `json:"id"`
+	BackupID           string `json:"backup_id"`
+	Kind               string `json:"kind"`
+	State              string `json:"state"`
+	Origin             string `json:"origin"`
+	Actor              string `json:"actor"`
+	Reason             string `json:"reason"`
+	Revision           int64  `json:"revision"`
+	RequestedAt        int64  `json:"requested_at_unix"`
+	AuthorizedAt       int64  `json:"authorized_at_unix,omitempty"`
+	CompletedAt        int64  `json:"completed_at_unix,omitempty"`
+	Error              string `json:"error,omitempty"`
+	Ticket             string `json:"ticket,omitempty"`
+	LeaseGeneration    int64  `json:"lease_generation,omitempty"`
+	ExecutionCommitted bool   `json:"execution_committed"`
+}
+
+type MaintenanceLease struct {
+	Owner      string `json:"owner"`
+	Generation int64  `json:"generation"`
+	ExpiresAt  int64  `json:"expires_at_unix"`
+}
+
+type Anomaly struct {
+	ID             int64  `json:"id"`
+	StableKey      string `json:"stable_key"`
+	Kind           string `json:"kind"`
+	KeyID          string `json:"key_id,omitempty"`
+	BackupID       string `json:"backup_id,omitempty"`
+	Detail         string `json:"detail"`
+	EventAt        int64  `json:"event_at_unix"`
+	OpenedAt       int64  `json:"opened_at_unix"`
+	LastSeenAt     int64  `json:"last_seen_at_unix"`
+	ResolvedAt     int64  `json:"resolved_at_unix,omitempty"`
+	AcknowledgedAt int64  `json:"acknowledged_at_unix,omitempty"`
+	ResolvedBy     string `json:"resolved_by,omitempty"`
+	ResolutionNote string `json:"resolution_note,omitempty"`
+}
+
+type AnomalyExclusion struct {
+	ID              int64    `json:"id"`
+	SourceAnomalyID int64    `json:"source_anomaly_id"`
+	KeyID           string   `json:"key_id"`
+	StartsAt        int64    `json:"starts_at_unix"`
+	EndsAt          int64    `json:"ends_at_unix"`
+	Actor           string   `json:"actor"`
+	Reason          string   `json:"reason"`
+	CreatedAt       int64    `json:"created_at_unix"`
+	Kinds           []string `json:"kinds"`
+}
+
+type MonitoringCheckModel struct {
+	CheckID     int64           `json:"check_id"`
+	KeyID       string          `json:"key_id"`
+	Revision    int64           `json:"revision"`
+	CoveredFrom int64           `json:"covered_from_unix"`
+	CoveredTo   int64           `json:"covered_to_unix"`
+	Model       json.RawMessage `json:"model,omitempty"`
+}
+
+type MonitoringCheck struct {
+	ID         int64                  `json:"id"`
+	StartedAt  int64                  `json:"started_at_unix"`
+	FinishedAt int64                  `json:"finished_at_unix,omitempty"`
+	PeriodFrom int64                  `json:"period_from_unix"`
+	PeriodTo   int64                  `json:"period_to_unix"`
+	Status     string                 `json:"status"`
+	Summary    string                 `json:"summary"`
+	Models     []MonitoringCheckModel `json:"models,omitempty"`
+}
+
+type MailMessage struct {
+	ID          int64  `json:"id"`
+	StableID    string `json:"stable_id"`
+	Kind        string `json:"kind"`
+	Subject     string `json:"subject"`
+	Body        string `json:"body"`
+	Attempts    int    `json:"attempts"`
+	NextAttempt int64  `json:"next_attempt_unix"`
+	SentAt      int64  `json:"sent_at_unix,omitempty"`
+}
+
+type MailSettings struct {
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	TLS        bool   `json:"tls"`
+	From       string `json:"from"`
+	Recipients string `json:"recipients"`
 }
 
 type Key struct {

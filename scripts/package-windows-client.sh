@@ -33,9 +33,12 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 ./scripts/go.sh build \
 
 cp README.md LICENSE "$stage/"
 cp \
+    docs/CLIENT-DEBIAN.md \
     docs/CLIENT-WINDOWS.md \
+    docs/INSTALL.md \
     docs/OPERATIONS.md \
     docs/PROTOCOL.md \
+    docs/RETENTION.md \
     docs/RESTORE-TEST.md \
     docs/SECURITY.md \
     "$stage/docs/"

@@ -1,0 +1,39 @@
+[Unit]
+Description=OnlyBackup monitoring, mail and retention maintenance
+After=local-fs.target network-online.target onlybackup-writer.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=onlybackup-maintenance
+Group=onlybackup-maintenance
+UMask=0077
+Environment=ONLYBACKUP_MAIL_CREDENTIALS=
+EnvironmentFile=-/etc/onlybackup-maintenance/maintenance.env
+ExecStart=/usr/local/bin/onlybackup-maintenance --state /var/lib/onlybackup --socket /run/onlybackup/maintenance.sock --mail-credentials=${ONLYBACKUP_MAIL_CREDENTIALS}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+ReadWritePaths=/var/lib/onlybackup/backups /var/lib/onlybackup/quarantine /var/lib/onlybackup/maintenance
+InaccessiblePaths=/var/lib/onlybackup/metadata.db -/var/lib/onlybackup/metadata.db-wal -/var/lib/onlybackup/metadata.db-shm /var/lib/onlybackup/incoming
+MemoryMax=512M
+TasksMax=64
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

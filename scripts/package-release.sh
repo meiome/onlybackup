@@ -28,7 +28,7 @@ archive="onlybackup_${version}_linux_amd64"
 stage="$output_dir/$archive"
 mkdir -p "$stage/bin" "$stage/docs" "$stage/deploy" "$stage/scripts"
 
-for name in onlybackup onlybackup-admin onlybackup-inspect onlybackup-receiver onlybackup-recover onlybackup-writer; do
+for name in onlybackup onlybackup-admin onlybackup-inspect onlybackup-receiver onlybackup-recover onlybackup-writer onlybackup-maintenance; do
     CGO_ENABLED=1 GOOS=linux GOARCH=amd64 ./scripts/go.sh build \
         -buildvcs=false -trimpath -o "$stage/bin/$name" "./cmd/$name"
 done
@@ -40,10 +40,11 @@ cp \
     docs/INSTALL.md \
     docs/OPERATIONS.md \
     docs/PROTOCOL.md \
+    docs/RETENTION.md \
     docs/RESTORE-TEST.md \
     docs/SECURITY.md \
     "$stage/docs/"
-cp deploy/onlybackup-receiver.service deploy/onlybackup-writer.service "$stage/deploy/"
+cp deploy/onlybackup-receiver.service deploy/onlybackup-writer.service deploy/onlybackup-maintenance.service "$stage/deploy/"
 cp scripts/backup-file.sh scripts/backup-mysql.sh "$stage/scripts/"
 
 source_date_epoch=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}

@@ -9,14 +9,17 @@ The receiver terminates TLS and streams requests to the writer over a Unix
 socket. It does not open backup files, the catalog, or persistent credentials.
 The writer authenticates requests, applies quota, rate, and concurrency limits,
 records attempts, verifies size and SHA-256, publishes files, and updates
-SQLite.
+SQLite. Separate privileged Unix sockets accept only the configured Unix peer
+UIDs. The maintenance account never opens SQLite; it can access the archive and
+quarantine solely to execute writer-authorized operations.
 
-The systemd units use separate users. `/var/lib/onlybackup` has mode 0700 and is
-owned by the writer. The receiver shares only the group required to open the
-0660 socket. This separation limits the effect of a compromised Internet-facing
+The systemd units use separate users and groups. `incoming` and SQLite remain
+writer-only. The archive and quarantine grant access only to the dedicated
+maintenance group; the receiver shares only the ingest-socket group and has the
+state hidden by systemd. This limits the effect of a compromised Internet-facing
 process, provided no additional ACLs, groups, or mounts grant access.
 
-The writer is a trusted component with full archive access. Mode 0400, publication
+The writer is a trusted component with full archive access. Mode 0440 (writer plus dedicated maintenance group), publication
 without replacement, and the absence of destructive API operations protect
 against normal upload behavior and accidental errors. They do not prevent root
 or a party with full control of the writer account from modifying or deleting
@@ -27,6 +30,7 @@ data. Protect against that risk with independent WORM storage or an offline copy
 | Stolen deposit credential | It can upload within quota but cannot read or delete through the API. It can consume quota with unwanted data. |
 | Compromised receiver | With the supplied units, it cannot access the archive. It can observe credentials and data in transit; encrypt sensitive content on the client. |
 | Compromised writer or root | It can alter the archive; OnlyBackup does not claim immutability for this scenario. |
+| Compromised maintenance | It can reach backup/quarantine bytes but not SQLite or deposit credentials. Writer tickets and persistent blocks restrict the normal protocol, but a compromised account with filesystem write access can still damage accessible files. |
 | Disk access | Plaintext backups are readable. Age-encrypted files require the separately stored private key; metadata, sizes, and timestamps remain visible. |
 | Interrupted deposit | Length and hash checks, fsync, catalog commit, and reconciliation prevent a positive receipt for an incomplete file. |
 | Invalid application dump | The checksum cannot detect a logically bad dump. Run periodic imports and application-level checks. |
@@ -86,10 +90,33 @@ directory, monitor its capacity, and inspect residuals without weakening ACLs.
 
 ## Operational limits
 
-OnlyBackup does not automatically delete completed backups and has no supported
-retention or pruning command. Quotas reject new deposits when exhausted; they
-do not reclaim space. Manual removal of archive files or catalog rows is
-unsupported and can destroy consistency.
+Opt-in retention uses an 80% physical-use trigger, a minimum cleanup target of
+10% of filesystem capacity, a fixed learned window, current-day and last-copy
+exclusions, generation-bound per-operation tickets, and at least 48 hours of
+quarantine. Blocking anomalies stop new destructive authorizations. A
+physically reconciled transient operation error can remove only its own block
+after a fresh regular check; other blocking incidents retain their normal
+administrative recovery.
+
+Final validation records durable permission for exactly one operation. A later
+revocation blocks new permissions but cannot cancel a committed move or unlink;
+quarantine and purge each require separate final permission. Maintenance
+reconciles committed work before new monitoring decisions, including when new
+destructive work is blocked. A local directory lock prevents overlapping
+physical executors even if the protocol lease expires. After a crash a new
+cycle may wait for the old lease for up to ten minutes; a stuck process has no
+timed failover. Uncertain physical outcomes require verification or repair.
+Manual pause has a known limitation: a later anomaly exclusion can clear its
+block, so operators must inspect the effective status after exclusions.
+
+The maintenance service alone performs physical moves and unlink. Manual
+removal of archive files or catalog rows is unsupported and is detected as an
+anomaly.
+
+Administrative commands may be invoked locally or through SSH, Mosh, pipes,
+and scripts. They still require access to the protected local Unix socket and
+retain explicit confirmations, audit records, anomaly blocks, and quarantine;
+the administrative socket is never a network API.
 
 A replacement credential starts a separate per-key quota history. Rotation
 must therefore account for both old and new key usage when sizing physical
@@ -106,7 +133,7 @@ or offline copy.
 - `make check`: Go test suite, static analysis, and current vulnerability scan.
 - `make race`: concurrency, interruption, idempotency, and quota regressions.
 - `make smoke`: real programs, HTTPS, Unix socket, catalog, and recovery.
-- `make system-test`: two processes, encrypted and plaintext deposits,
+- `make system-test`: real server processes, encrypted and plaintext deposits,
   revocation, restart, and cold copy.
 - `make isolation-test`: separate Linux users in a network-isolated container;
   the receiver actually attempts to read and alter the archive.
@@ -121,11 +148,22 @@ validates the supplied systemd units. No test can guarantee the recoverability
 of future backups. Windows tests do not cover every desktop release, non-NTFS
 filesystems, or local enterprise policies.
 
+The release workflow runs `make check` and `make race`. Smoke, system,
+isolation, and MariaDB targets are separate checks, and production restore
+testing is a separate operational exercise.
+
 ## Compatibility
 
-Existing backup content remains unchanged. Schema v4 adds the attempt history
-required for the rolling window and imports the one reconstructable
-`started_at` value for each v3 backup. Expired attempts can be removed on the
-next admission for the same key. Opening v1-v3 catalogs read-only does not
-migrate or write them and uses the best available count from backup records.
-Create a cold copy before upgrading and upgrade all programs together.
+Existing backup content and public clients remain unchanged. Schema v5 adds
+retention states, models, anomalies, persistent mail, leases, and operation
+audit. The first writable v4 open checkpoints SQLite, creates
+`metadata.db.v4.cold-copy`, migrates transactionally, and leaves automation
+disabled. Schema v7 adds monitoring history; schema v8 adds lease generations
+and binds operation tickets to them. Schema v9 records definitive per-operation
+permissions; revocation after this point affects only future permissions.
+Maintenance holds a local kernel lock throughout each cycle so lease expiry
+cannot admit a concurrent physical executor. Stop maintenance before upgrading
+and upgrade writer and maintenance together; old binaries do not take this lock.
+Opening older catalogs read-only does not
+migrate them. Create an independent cold copy before upgrading and upgrade all
+programs together.

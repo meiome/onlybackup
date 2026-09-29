@@ -5,11 +5,12 @@ After=local-fs.target
 [Service]
 Type=simple
 User=onlybackup-writer
-Group=onlybackup-ingest
+Group=onlybackup-maintenance
+SupplementaryGroups=onlybackup-ingest onlybackup-admin
 UMask=0077
 RuntimeDirectory=onlybackup
-RuntimeDirectoryMode=0750
-ExecStart=/usr/local/bin/onlybackup-writer --state /var/lib/onlybackup --socket /run/onlybackup/writer.sock --reserve-free 1GiB
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/bin/onlybackup-writer --state /var/lib/onlybackup --socket /run/onlybackup/writer.sock --admin-socket /var/lib/onlybackup/admin.sock --maintenance-socket /run/onlybackup/maintenance.sock --ingest-group onlybackup-ingest --admin-user root --admin-group onlybackup-admin --maintenance-user onlybackup-maintenance --maintenance-group onlybackup-maintenance --reserve-free 1GiB
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=25

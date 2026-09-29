@@ -1,5 +1,5 @@
 GO := ./scripts/go.sh
-BINS := onlybackup onlybackup-admin onlybackup-writer onlybackup-receiver onlybackup-recover onlybackup-inspect
+BINS := onlybackup onlybackup-admin onlybackup-writer onlybackup-receiver onlybackup-recover onlybackup-inspect onlybackup-maintenance
 
 .PHONY: build windows-client test race vet vuln check fmt smoke system-test isolation-test mysql-test
 build:

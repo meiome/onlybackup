@@ -85,6 +85,7 @@ Errors use the form `{"error":"message"}`:
 | 401 | Unknown or revoked credential. |
 | 404 / 405 | Path or method not available. |
 | 409 | The idempotency key is in use for different data or an upload still in progress. |
+| 410 | The idempotency key identifies a backup already in retention, quarantine, or deleted. |
 | 411 | Unknown content length or empty file. |
 | 413 | File exceeds the profile limit. |
 | 415 | Unsupported body type or encoding. |
@@ -101,6 +102,11 @@ metadata, size, and SHA-256 digest. If the deposit is already complete, it
 returns the original receipt without creating another backup. Reusing the key
 with different data is rejected.
 
+After a backup enters retention, replaying its old idempotency key returns 410
+and never recreates the archive file or claims that it is available. The admin
+and maintenance protocols use separate authenticated local Unix sockets. They
+are not public protocol endpoints and are never forwarded by the receiver.
+
 Older clients using v1 may omit the idempotency header and retain the original
 behavior: each successful request creates a separate deposit.
 
@@ -116,7 +122,7 @@ are removed on the next admission for the same key.
 1. Validate and reserve atomically in the database: create the `receiving`
    state and record the attempt.
 2. Exclusively create `incoming/<ID>.part`; copy and verify the content length.
-3. Verify SHA-256, apply mode 0400, synchronize, and close the file.
+3. Verify SHA-256, apply mode 0440 for writer and maintenance, synchronize, and close the file.
 4. Hard-link to `backups/<ID>.backup` without replacement and synchronize the
    directory.
 5. Remove the temporary file and synchronize the incoming directory.

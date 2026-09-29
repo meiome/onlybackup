@@ -1,9 +1,11 @@
 # Production operations
 
 This runbook covers recurring checks after installation. It does not replace
-application-specific backup or restore procedures. Run administrative commands
-locally as `onlybackup-writer`; do not expose the administrative tools or state
-directory over the network.
+application-specific backup or restore procedures. Existing profile/key queries
+may run as `onlybackup-writer`; retention mutations must run as root. The
+administrative CLI may be used locally or through SSH, Mosh, pipes, and scripts,
+but the Unix sockets and state must remain local to the server and must not be
+exposed over the network.
 
 ## Monitoring cadence
 
@@ -13,11 +15,13 @@ the most recent deposits:
 ```bash
 sudo systemctl is-active \
   onlybackup-writer.service \
-  onlybackup-receiver.service
+  onlybackup-receiver.service \
+  onlybackup-maintenance.service
 
 sudo journalctl \
   -u onlybackup-writer.service \
   -u onlybackup-receiver.service \
+  -u onlybackup-maintenance.service \
   --since '-24 hours' \
   --priority warning \
   --no-pager
@@ -52,10 +56,45 @@ taking action. Do not manually delete state files while services are running.
 
 ## Capacity and retention
 
-OnlyBackup does not implement automatic retention or a supported command for
-deleting completed backups. Profile totals are admission limits, not cleanup
-policies. Manually removing `.backup` files or catalog rows breaks consistency
-and is unsupported.
+OnlyBackup retention starts disabled on a new archive. An upgrade preserves
+existing enablement and blocks: it does not turn on deletion in a previously
+disabled archive, and it does not automatically turn off an enabled one. Inspect
+the actual state with:
+
+```bash
+sudo onlybackup-admin --state /var/lib/onlybackup automation status
+sudo onlybackup-admin --state /var/lib/onlybackup retention simulate
+```
+
+Automatic cleanup starts only at 80% physical filesystem use, never at 79.99%,
+and each cycle targets at least 10% of total filesystem capacity. It keeps the
+current day, at least `D` complete days, the last available copy, and 48 hours
+of quarantine. The forecast includes every expected copy, learned growth, and
+a 20% margin, using the largest rolling 48-hour window in the next week. If the
+legal candidates are insufficient, OnlyBackup requests all of them and mails
+the remaining shortfall. Quarantined bytes still consume physical space and
+quota. Profile totals remain admission limits and do not create disk capacity.
+See [RETENTION.md](RETENTION.md) for activation, manual selection, recovery,
+anomaly blocks, and the exact state machine. Manually deleting `.backup` files,
+quarantine files, or catalog rows remains unsupported and triggers an anomaly.
+
+`mail test` queues a message; wait for the persisted successful delivery shown
+by `automation status` before running `retention enable`. `automation setup`
+resets enablement, mail proof, and learning and rejects pending operations, so
+use it only for initial configuration or an intentional reset.
+
+A retention request receives a provisional ticket. The final validation commits
+permission for that single physical move or unlink; later revocation stops new
+permissions but does not cancel committed work. Quarantine and purge need
+separate permissions. Maintenance resumes committed work before new monitoring
+and selection. After a crash it may wait up to ten minutes for the old protocol
+lease. Its directory lock prevents two physical executors, but a stuck executor
+has no timed replacement. An uncertain physical outcome remains blocked until
+verified or repaired. See the retention guide before restarting a stuck cycle.
+
+`retention pause` has a known persistence limit: a later anomaly exclusion can
+clear its block. Recheck `automation status` after exclusions; do not treat the
+pause command as a permanent safety switch.
 
 Plan storage from backup size, frequency, intended retention period, growth,
 temporary incoming data, cold copies, and a free-space safety margin. Increasing
@@ -67,9 +106,9 @@ total. Include all current and revoked credentials when estimating physical
 archive growth.
 
 Before capacity becomes critical, expand the filesystem or migrate the complete
-state during a maintenance window. If a shorter retention period is required,
-design and test a separate lifecycle procedure before production use; do not
-improvise deletion in the archive.
+state during a maintenance window. The learned `D` is not automatically reduced
+to accommodate growth; an unsustainable capacity estimate blocks deletion and
+requires administrative action.
 
 ## Credential rotation
 
@@ -145,14 +184,16 @@ correctly reject the renewed certificate.
 A consistent state copy contains the catalog, any SQLite sidecar files, incoming
 state, completed backups, ownership, modes, ACLs, and extended attributes.
 
-1. Stop the receiver and writer and verify both are inactive.
+1. Stop the receiver, writer, and maintenance service and verify all are inactive.
 2. Confirm that no OnlyBackup process or administrative command still has the
    state open.
-3. Copy the complete `/var/lib/onlybackup` tree to independent storage with a
+3. Copy the complete `/var/lib/onlybackup` tree—including `quarantine`, the
+   maintenance state, and `metadata.db.v4.cold-copy` when present—to independent storage with a
    tool that preserves metadata.
 4. Record the copy time, release version, total size, file count, and a digest
    manifest protected separately from the copy.
-5. Restart writer and receiver and verify a new upload.
+5. Restart writer, receiver, and maintenance and verify a new upload and the
+   automation status.
 6. Test recovery from the copy on another path or system; never use the live
    archive as the recovery-test workspace.
 
@@ -174,6 +215,15 @@ upgrades. A complete exercise verifies:
 
 Do not keep the only age identity on an upload client or deposit server. Test
 the protected copy that would actually be used during a disaster.
+
+With an offline copy, use the receipt, copied `.backup` file, and age identity
+directly, or `onlybackup-recover --state DIRECTORY --id ID` when the copied
+catalog marks the backup `complete`. A pending quarantine request (`deleting`)
+must be cancelled through the live administrative console before state-based
+recovery. A quarantined file needs a live administrative restore before purge;
+`purging` and `deleted` cannot be recovered from that state. An offline copy
+may still contain its file, so inspect it and use receipt/file recovery without
+assuming the live writer or maintenance service is available.
 
 ## Incident handling
 
