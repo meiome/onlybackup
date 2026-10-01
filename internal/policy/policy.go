@@ -243,13 +243,11 @@ func Forecast48Hours(models []KeyModel, now time.Time) (uint64, error) {
 				if at.Before(now) || !at.Before(eventLimit) {
 					continue
 				}
-				days := at.Sub(learned.LearnedAt).Hours() / 24
-				projected := float64(appointment.MedianSize) + appointment.GrowthPerDay*days
-				withMargin := math.Ceil(projected * (1 + ForecastSafetyMargin))
-				if projected <= 0 || math.IsNaN(withMargin) || math.IsInf(withMargin, 0) || withMargin >= float64(math.MaxUint64) {
-					return 0, errors.New("previsione spazio non rappresentabile")
+				size, err := forecastSize(learned, appointment, at, ForecastSafetyMargin)
+				if err != nil {
+					return 0, err
 				}
-				events = append(events, event{at: at, bytes: uint64(withMargin)})
+				events = append(events, event{at: at, bytes: size})
 			}
 		}
 	}
@@ -278,6 +276,76 @@ func Forecast48Hours(models []KeyModel, now time.Time) (uint64, error) {
 		}
 	}
 	return largest, nil
+}
+
+// forecastSize uses the baseline at LearnedAt for both quota and disk forecasts.
+func forecastSize(learned KeyModel, appointment Appointment, at time.Time, margin float64) (uint64, error) {
+	if appointment.MinuteOfDay < 0 || appointment.MinuteOfDay >= 24*60 || appointment.MedianSize <= 0 || appointment.GrowthPerDay < 0 {
+		return 0, errors.New("modello di previsione non valido")
+	}
+	days := at.Sub(learned.LearnedAt).Hours() / 24
+	projected := float64(appointment.MedianSize) + appointment.GrowthPerDay*days
+	size := math.Ceil(projected * (1 + margin))
+	if projected <= 0 || math.IsNaN(size) || math.IsInf(size, 0) || size >= float64(math.MaxUint64) {
+		return 0, errors.New("previsione spazio non rappresentabile")
+	}
+	return uint64(size), nil
+}
+
+// ForecastNextBackup projects the largest still-pending appointment within
+// tolerance or the next unsatisfied future appointment, including model growth.
+// Quota checks use its size without the disk's extra 20% margin.
+func ForecastNextBackup(learned KeyModel, now time.Time, observations []Observation) (uint64, error) {
+	if !learned.Reliable || learned.ReviewRequired {
+		return 0, nil
+	}
+	loc, err := time.LoadLocation(learned.Timezone)
+	if err != nil {
+		return 0, err
+	}
+	type slotKey struct {
+		at  time.Time
+		app Appointment
+	}
+	satisfied := make(map[slotKey]int)
+	slots, _, _, matches := matchAppointments(learned, observations, now.Add(-ScheduleTolerance), now.Add(ScheduleTolerance), now, loc)
+	for i, slot := range slots {
+		if matches[i] >= 0 {
+			satisfied[slotKey{slot.at, slot.app}]++
+		}
+	}
+	var next time.Time
+	var size, pending uint64
+	first := localMidnight(now.Add(-ScheduleTolerance), loc)
+	for i := 0; i <= 8; i++ {
+		day := first.AddDate(0, 0, i)
+		for _, app := range learned.Schedule[day.Weekday()] {
+			at := appointmentTime(day, app.MinuteOfDay, loc)
+			if at.Add(ScheduleTolerance).Before(now) {
+				continue
+			}
+			key := slotKey{at, app}
+			if satisfied[key] > 0 {
+				satisfied[key]--
+				continue
+			}
+			projected, err := forecastSize(learned, app, at, 0)
+			if err != nil {
+				return 0, err
+			}
+			if !at.After(now) {
+				pending = max(pending, projected)
+				continue
+			}
+			if next.IsZero() || at.Before(next) {
+				next, size = at, projected
+			} else if at.Equal(next) && projected > size {
+				size = projected
+			}
+		}
+	}
+	size = max(size, pending)
+	return size, nil
 }
 
 func DailyRequirement(expected48h uint64) uint64 {
@@ -323,6 +391,51 @@ func checkWindow(m KeyModel, observations []Observation, reportFrom, reportTo, n
 	if err != nil {
 		return []Finding{{StableKey: "timezone:" + m.KeyID, Kind: "model", KeyID: m.KeyID, Detail: "fuso del modello non valido"}}
 	}
+	expected, ordered, matchObservation, matchSlot := matchAppointments(m, observations, reportFrom, reportTo, now, loc)
+	var findings []Finding
+	for slotIndex, slot := range expected {
+		if !slot.report || now.Before(slot.at.Add(ScheduleTolerance)) {
+			continue
+		}
+		stable := fmt.Sprintf("slot:%s:%s", m.KeyID, slot.at.UTC().Format(time.RFC3339))
+		if matchSlot[slotIndex] < 0 {
+			findings = append(findings, Finding{StableKey: stable, Kind: "schedule_missing", KeyID: m.KeyID, Detail: "copia attesa non ricevuta", At: slot.at})
+			continue
+		}
+		observation := ordered[matchSlot[slotIndex]]
+		days := observation.At.Sub(m.LearnedAt).Hours() / 24
+		expectedSize := float64(slot.app.MedianSize) + slot.app.GrowthPerDay*days
+		if expectedSize <= 0 || math.Abs(float64(observation.Size)-expectedSize) > expectedSize*SizeTolerance {
+			findings = append(findings, Finding{StableKey: "size:" + observation.BackupID, Kind: "size", KeyID: m.KeyID, BackupID: observation.BackupID, Detail: "dimensione fuori dalla tolleranza del 20%", At: observation.At})
+		}
+	}
+	expectedCount, receivedCount, excessBytes := 0, 0, int64(0)
+	for _, slot := range expected {
+		if slot.report {
+			expectedCount++
+		}
+	}
+	for i, observation := range ordered {
+		if observation.KeyID == m.KeyID && observation.At.After(reportFrom) && !observation.At.After(reportTo) && !observation.At.After(now) {
+			receivedCount++
+			if matchObservation[i] < 0 {
+				excessBytes += observation.Size
+			}
+		}
+	}
+	period := fmt.Sprintf("%s..%s", reportFrom.In(loc).Format(time.RFC3339), reportTo.In(loc).Format(time.RFC3339))
+	for i, observation := range ordered {
+		if matchObservation[i] < 0 && observation.KeyID == m.KeyID && observation.At.After(reportFrom) && !observation.At.After(reportTo) && !observation.At.After(now) {
+			detail := fmt.Sprintf("AVVISO NON BLOCCANTE - copie eccedenti: chiave %s, periodo %s, attese %d, ricevute %d, volume eccedente %d byte; verificare configurazione o possibili caricamenti impropri", m.KeyID, period, expectedCount, receivedCount, excessBytes)
+			findings = append(findings, Finding{StableKey: "extra:" + observation.BackupID, Kind: "extra", KeyID: m.KeyID, BackupID: observation.BackupID, Detail: detail, At: observation.At})
+		}
+	}
+	return findings
+}
+
+// matchAppointments shares chronological, one-to-one matching between monitoring
+// and quota forecasting, including observations across civil-day boundaries.
+func matchAppointments(m KeyModel, observations []Observation, reportFrom, reportTo, now time.Time, loc *time.Location) ([]checkSlot, []Observation, []int, []int) {
 	startDay := localMidnight(reportFrom, loc).AddDate(0, 0, -1)
 	// Matching must not depend on the report boundary, even for a chain of
 	// overlapping slots spanning several days. Include the observed prefix;
@@ -380,45 +493,7 @@ func checkWindow(m KeyModel, observations []Observation, reportFrom, reportTo, n
 			slotIndex++
 		}
 	}
-	var findings []Finding
-	for slotIndex, slot := range expected {
-		if !slot.report || now.Before(slot.at.Add(ScheduleTolerance)) {
-			continue
-		}
-		stable := fmt.Sprintf("slot:%s:%s", m.KeyID, slot.at.UTC().Format(time.RFC3339))
-		if matchSlot[slotIndex] < 0 {
-			findings = append(findings, Finding{StableKey: stable, Kind: "schedule_missing", KeyID: m.KeyID, Detail: "copia attesa non ricevuta", At: slot.at})
-			continue
-		}
-		observation := ordered[matchSlot[slotIndex]]
-		days := observation.At.Sub(m.LearnedAt).Hours() / 24
-		expectedSize := float64(slot.app.MedianSize) + slot.app.GrowthPerDay*days
-		if expectedSize <= 0 || math.Abs(float64(observation.Size)-expectedSize) > expectedSize*SizeTolerance {
-			findings = append(findings, Finding{StableKey: "size:" + observation.BackupID, Kind: "size", KeyID: m.KeyID, BackupID: observation.BackupID, Detail: "dimensione fuori dalla tolleranza del 20%", At: observation.At})
-		}
-	}
-	expectedCount, receivedCount, excessBytes := 0, 0, int64(0)
-	for _, slot := range expected {
-		if slot.report {
-			expectedCount++
-		}
-	}
-	for i, observation := range ordered {
-		if observation.KeyID == m.KeyID && observation.At.After(reportFrom) && !observation.At.After(reportTo) && !observation.At.After(now) {
-			receivedCount++
-			if matchObservation[i] < 0 {
-				excessBytes += observation.Size
-			}
-		}
-	}
-	period := fmt.Sprintf("%s..%s", reportFrom.In(loc).Format(time.RFC3339), reportTo.In(loc).Format(time.RFC3339))
-	for i, observation := range ordered {
-		if matchObservation[i] < 0 && observation.KeyID == m.KeyID && observation.At.After(reportFrom) && !observation.At.After(reportTo) && !observation.At.After(now) {
-			detail := fmt.Sprintf("AVVISO NON BLOCCANTE - copie eccedenti: chiave %s, periodo %s, attese %d, ricevute %d, volume eccedente %d byte; verificare configurazione o possibili caricamenti impropri", m.KeyID, period, expectedCount, receivedCount, excessBytes)
-			findings = append(findings, Finding{StableKey: "extra:" + observation.BackupID, Kind: "extra", KeyID: m.KeyID, BackupID: observation.BackupID, Detail: detail, At: observation.At})
-		}
-	}
-	return findings
+	return expected, ordered, matchObservation, matchSlot
 }
 
 type Filesystem struct {
@@ -452,18 +527,18 @@ func (f Filesystem) Bytes() (total, used, available uint64, err error) {
 	return
 }
 
-func EstimateRetentionDays(capacity, otherUsed, reserve, expectedDaily uint64) (int, bool) {
-	if expectedDaily == 0 || capacity <= otherUsed || capacity-otherUsed <= reserve {
-		return MinimumDays, false
+// RetentionProtected preserves the current day and the configured number of
+// complete civil days, including DST boundaries.
+func RetentionProtected(backup model.Backup, now time.Time, timezone string, days int) (bool, error) {
+	if days < MinimumDays || days > 365000 {
+		return true, errors.New("minimo di conservazione non valido")
 	}
-	usable := capacity - otherUsed - reserve
-	// Keep D full days, the current day, and at least 48 hours of deposits
-	// while selected files remain physically present in quarantine.
-	if usable/expectedDaily <= 3 {
-		return MinimumDays, false
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return true, err
 	}
-	days := int(usable/expectedDaily) - 3
-	return days, days >= MinimumDays
+	cutoff := localMidnight(now, loc).AddDate(0, 0, -days)
+	return !backupTimeForPolicy(backup).Before(cutoff), nil
 }
 
 type SelectionInput struct {
@@ -472,6 +547,7 @@ type SelectionInput struct {
 	Filesystem           Filesystem
 	ThresholdBasisPoints int
 	RetentionDays        int
+	KeyRetentionDays     map[string]int
 	Expected48hBytes     uint64
 	PendingPurgeBytes    uint64
 	Backups              []model.Backup
@@ -544,7 +620,7 @@ func Select(input SelectionInput) (Selection, error) {
 	needed -= input.PendingPurgeBytes
 	result.BytesNeeded = needed
 	today := localMidnight(input.Now, loc)
-	protectedAfter := today.AddDate(0, 0, -input.RetentionDays)
+
 	counts := make(map[string]int)
 	for _, backup := range input.Backups {
 		if backup.Status == model.BackupComplete {
@@ -557,6 +633,14 @@ func Select(input SelectionInput) (Selection, error) {
 		if backup.Status != model.BackupComplete && backup.Status != model.BackupDeleting && backup.Status != model.BackupQuarantined && backup.Status != model.BackupPurging {
 			continue
 		}
+		minimum := input.RetentionDays
+		if days, ok := input.KeyRetentionDays[backup.KeyID]; ok {
+			minimum = days
+		}
+		if minimum < MinimumDays || minimum > 365000 {
+			return result, errors.New("minimo di conservazione non valido")
+		}
+		protectedAfter := today.AddDate(0, 0, -minimum)
 		day := localMidnight(backupTimeForPolicy(backup), loc)
 		if !day.Before(protectedAfter) || !day.Before(today) {
 			continue

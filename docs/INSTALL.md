@@ -444,8 +444,8 @@ writer lock does not replace an orderly shutdown and process check.
 
 ## SQLite schema and existing archives
 
-Current programs open v1 through v9 catalogs read-only. The first write access
-upgrades an older catalog transactionally to v9. Before the v4-to-v5
+Current programs open v1 through v10 catalogs read-only. The first write access
+upgrades an older catalog transactionally to v10. Before the v4-to-v5
 transaction it checkpoints SQLite and creates the reserved
 `metadata.db.v4.cold-copy`. Schema v5 adds retention states and audit, models,
 anomalies, persistent mail, and the maintenance lease. Schema v6 adds audited
@@ -469,11 +469,20 @@ or policy changes cannot cancel that one operation. Quarantine and purge each
 require their own final permission. Recent migrations preserve existing
 enablement and retention blocks.
 
+Schema v10 separates manual pauses from automatic blocks and stores minimum
+retention days per key. Existing keys inherit the previous archive minimum;
+new keys use the preserved archive default unless explicitly configured.
+The migration never computes a new minimum from disk space. Since the old
+schema cannot reliably identify the original cause of a block, existing blocked
+archives also receive an administrative hold. After reviewing a regular check,
+release it with `retention resume`. Configure a key with
+`retention minimum --key KEY_ID --days 30`; learning never changes it.
+
 The v3-to-v4 migration imports the one attempt reconstructable from
 `backups.started_at`; older retries that were already overwritten cannot be
 reconstructed. Existing backup files are not changed or re-encrypted.
 
-Do not open a v9 catalog with older programs. There is no automatic downgrade;
+Do not open a v10 catalog with older programs. There is no automatic downgrade;
 rollback requires the complete verified copy made before the upgrade.
 
 ## Upgrade

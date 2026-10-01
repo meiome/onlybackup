@@ -31,7 +31,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 ./scripts/go.sh build \
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 ./scripts/go.sh build \
     -buildvcs=false -trimpath -o "$stage/bin/onlybackup-recover.exe" ./cmd/onlybackup-recover
 
-cp README.md LICENSE "$stage/"
+cp README.md LICENSE CONTRIBUTING.md CHANGELOG.md SECURITY.md "$stage/"
 cp \
     docs/CLIENT-DEBIAN.md \
     docs/CLIENT-WINDOWS.md \

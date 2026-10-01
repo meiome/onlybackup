@@ -33,7 +33,7 @@ for name in onlybackup onlybackup-admin onlybackup-inspect onlybackup-receiver o
         -buildvcs=false -trimpath -o "$stage/bin/$name" "./cmd/$name"
 done
 
-cp README.md LICENSE "$stage/"
+cp README.md LICENSE CONTRIBUTING.md CHANGELOG.md SECURITY.md "$stage/"
 cp \
     docs/CLIENT-DEBIAN.md \
     docs/CLIENT-WINDOWS.md \

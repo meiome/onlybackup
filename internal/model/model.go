@@ -36,6 +36,7 @@ var ErrIdempotencyConflict = errors.New("chiave di idempotenza gia usata per un 
 var ErrIdempotencyInProgress = errors.New("deposito con la stessa chiave di idempotenza ancora in corso")
 var ErrIdempotencyUnavailable = errors.New("deposito gia sottoposto a retention e non piu disponibile; usare una nuova chiave di idempotenza")
 var ErrRetentionBlocked = errors.New("cancellazioni sospese")
+var ErrRetentionMinimum = errors.New("backup protetto dal minimo di conservazione della chiave")
 var ErrCurrentDay = errors.New("i backup della giornata corrente non possono essere cancellati")
 var ErrLastCopy = errors.New("l'ultima copia disponibile della sorgente non puo essere cancellata")
 var ErrTooEarly = errors.New("quarantena minima di 48 ore non ancora trascorsa")
@@ -252,19 +253,22 @@ const (
 )
 
 type AutomationStatus struct {
-	Enabled         bool   `json:"enabled"`
-	MailTested      bool   `json:"mail_tested"`
-	MonitoringState string `json:"monitoring_state"`
-	DeletionBlocked bool   `json:"deletion_blocked"`
-	BlockReason     string `json:"block_reason,omitempty"`
-	Timezone        string `json:"timezone"`
-	RetentionDays   int    `json:"retention_days"`
-	ThresholdBasis  int    `json:"threshold_basis_points"`
-	ReserveFree     int64  `json:"reserve_free_bytes"`
-	ModelRevision   int64  `json:"model_revision"`
-	LastCheckAt     int64  `json:"last_check_at_unix,omitempty"`
-	NextReportAt    int64  `json:"next_report_at_unix,omitempty"`
-	ActiveAnomalies int    `json:"active_anomalies"`
+	ManualPaused      bool           `json:"manual_paused"`
+	ManualPauseReason string         `json:"manual_pause_reason,omitempty"`
+	KeyRetentionDays  map[string]int `json:"key_retention_days"`
+	Enabled           bool           `json:"enabled"`
+	MailTested        bool           `json:"mail_tested"`
+	MonitoringState   string         `json:"monitoring_state"`
+	DeletionBlocked   bool           `json:"deletion_blocked"`
+	BlockReason       string         `json:"block_reason,omitempty"`
+	Timezone          string         `json:"timezone"`
+	RetentionDays     int            `json:"retention_days"`
+	ThresholdBasis    int            `json:"threshold_basis_points"`
+	ReserveFree       int64          `json:"reserve_free_bytes"`
+	ModelRevision     int64          `json:"model_revision"`
+	LastCheckAt       int64          `json:"last_check_at_unix,omitempty"`
+	NextReportAt      int64          `json:"next_report_at_unix,omitempty"`
+	ActiveAnomalies   int            `json:"active_anomalies"`
 }
 
 type RetentionOperation struct {
@@ -372,4 +376,12 @@ type Quota struct {
 	Reserved    int64   `json:"reserved_bytes"`
 	Active      int64   `json:"active_uploads"`
 	Attempts24h int64   `json:"attempts_last_24h"`
+}
+
+// RetentionDaysForKey returns the explicit minimum, or the archive default.
+func (s AutomationStatus) RetentionDaysForKey(keyID string) int {
+	if days, ok := s.KeyRetentionDays[keyID]; ok {
+		return days
+	}
+	return s.RetentionDays
 }

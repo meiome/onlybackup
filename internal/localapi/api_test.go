@@ -357,3 +357,35 @@ func TestConfirmRequiresVerifiedPhysicalResult(t *testing.T) {
 		t.Fatalf("conferma fisica valida rifiutata: %d %s", response.Code, response.Body.String())
 	}
 }
+
+func TestRetentionMinimumIsAdministratorOwned(t *testing.T) {
+	api, s := apiFixture(t)
+	key, _, err := s.CreateKey("minimum", "XS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"key_id": key.ID, "days": 30}
+	if r := request(api.AdminHandler(), "POST", "/v1/retention/minimum", body, false); r.Code != http.StatusForbidden {
+		t.Fatalf("missing peer accepted: %d", r.Code)
+	}
+	if r := request(api.MaintenanceHandler(), "POST", "/v1/retention/minimum", body, true); r.Code != http.StatusNotFound {
+		t.Fatalf("maintenance changed minimum: %d", r.Code)
+	}
+	if r := request(api.MaintenanceHandler(), "POST", "/v1/retention/window", map[string]int{"days": 80}, false); r.Code != http.StatusNotFound {
+		t.Fatalf("old automatic window endpoint accepted: %d", r.Code)
+	}
+	for _, days := range []int{0, 6, 365001} {
+		body["days"] = days
+		if r := request(api.AdminHandler(), "POST", "/v1/retention/minimum", body, true); r.Code != http.StatusBadRequest {
+			t.Fatalf("invalid minimum accepted: %d", r.Code)
+		}
+	}
+	body["days"] = 30
+	if r := request(api.AdminHandler(), "POST", "/v1/retention/minimum", body, true); r.Code != http.StatusOK {
+		t.Fatalf("minimum rejected: %d %s", r.Code, r.Body.String())
+	}
+	status, err := s.AutomationStatus()
+	if err != nil || status.RetentionDaysForKey(key.ID) != 30 {
+		t.Fatalf("minimum not saved: %+v %v", status, err)
+	}
+}

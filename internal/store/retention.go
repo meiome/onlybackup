@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/meiome/onlybackup/internal/model"
+	"github.com/meiome/onlybackup/internal/policy"
 )
 
 const quarantineMinimum = 48 * time.Hour
@@ -20,13 +21,36 @@ type MailSettings = model.MailSettings
 
 func (s *Store) AutomationStatus() (model.AutomationStatus, error) {
 	var v model.AutomationStatus
-	err := s.db.QueryRow(`SELECT enabled,mail_tested,monitoring_state,deletion_blocked,block_reason,
+	err := s.db.QueryRow(`SELECT enabled,mail_tested,monitoring_state,(deletion_blocked OR manual_paused),block_reason,manual_paused,manual_pause_reason,
  timezone,retention_days,threshold_basis_points,reserve_free,model_revision,last_check_at,next_report_at,
  (SELECT COUNT(*) FROM anomalies WHERE resolved_at=0) FROM automation_state WHERE id=1`).Scan(
-		&v.Enabled, &v.MailTested, &v.MonitoringState, &v.DeletionBlocked, &v.BlockReason,
+		&v.Enabled, &v.MailTested, &v.MonitoringState, &v.DeletionBlocked, &v.BlockReason, &v.ManualPaused, &v.ManualPauseReason,
 		&v.Timezone, &v.RetentionDays, &v.ThresholdBasis, &v.ReserveFree, &v.ModelRevision, &v.LastCheckAt,
 		&v.NextReportAt, &v.ActiveAnomalies)
-	if err == nil && v.DeletionBlocked && v.MonitoringState == model.MonitoringRegular {
+	if err != nil {
+		return v, err
+	}
+	if v.ManualPaused {
+		v.BlockReason = v.ManualPauseReason
+	}
+	v.KeyRetentionDays = make(map[string]int)
+	rows, err := s.db.Query(`SELECT k.id,COALESCE(r.days,a.retention_days) FROM keys k CROSS JOIN automation_state a LEFT JOIN key_retention r ON r.key_id=k.id WHERE a.id=1`)
+	if err != nil {
+		return v, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var days int
+		if err = rows.Scan(&id, &days); err != nil {
+			return v, err
+		}
+		v.KeyRetentionDays[id] = days
+	}
+	if err = rows.Err(); err != nil {
+		return v, err
+	}
+	if v.DeletionBlocked && v.MonitoringState == model.MonitoringRegular {
 		v.MonitoringState = model.MonitoringPaused
 	}
 	return v, err
@@ -40,16 +64,32 @@ func (s *Store) SetReserveFree(bytes int64) error {
 	return err
 }
 
-func (s *Store) SetRetentionDays(days int) error {
-	if days < 7 {
-		return errors.New("conservazione minima di 7 giorni")
+// SetKeyRetentionDays changes only the administrator-owned policy, never the model.
+func (s *Store) SetKeyRetentionDays(keyID string, days int) error {
+	if !model.ValidID(keyID) || days < 7 || days > 365000 {
+		return errors.New("chiave o conservazione non valida: da 7 a 365000 giorni")
 	}
-	result, err := s.db.Exec(`UPDATE automation_state SET retention_days=? WHERE id=1 AND model_revision=0`, days)
+	_, err := s.db.Exec(`INSERT INTO key_retention(key_id,days) VALUES(?,?) ON CONFLICT(key_id) DO UPDATE SET days=excluded.days`, keyID, days)
+	return err
+}
+
+// Check again under the same transaction as each new destructive permission.
+func checkRetentionMinimumTx(tx *sql.Tx, backupID string, now time.Time) error {
+	var received, timezone string
+	var started int64
+	var days int
+	err := tx.QueryRow(`SELECT b.received_at,b.started_at,a.timezone,COALESCE(r.days,a.retention_days)
+ FROM backups b CROSS JOIN automation_state a LEFT JOIN key_retention r ON r.key_id=b.key_id
+ WHERE b.id=? AND a.id=1`, backupID).Scan(&received, &started, &timezone, &days)
 	if err != nil {
 		return err
 	}
-	if changed, _ := result.RowsAffected(); changed != 1 {
-		return errors.New("la finestra di conservazione e gia fissata dal modello corrente")
+	protected, err := policy.RetentionProtected(model.Backup{Receipt: model.Receipt{ReceivedAt: received}, StartedAt: started}, now, timezone, days)
+	if err != nil {
+		return err
+	}
+	if protected {
+		return model.ErrRetentionMinimum
 	}
 	return nil
 }
@@ -121,7 +161,7 @@ func (s *Store) PauseRetention(reason string) error {
 	if strings.TrimSpace(reason) == "" {
 		reason = "sospensione amministrativa"
 	}
-	_, err := s.db.Exec(`UPDATE automation_state SET deletion_blocked=1,block_reason=?,monitoring_state='SOSPESO' WHERE id=1`, reason)
+	_, err := s.db.Exec(`UPDATE automation_state SET manual_paused=1,manual_pause_reason=? WHERE id=1`, reason)
 	return err
 }
 
@@ -147,7 +187,7 @@ func (s *Store) ResumeRetention(now time.Time) error {
 	if active != 0 || uncertain != 0 || revision == 0 || lastCheck == 0 || lastCheck > now.Unix()+1 || now.Unix()-lastCheck > int64(10*time.Minute/time.Second) || state != model.MonitoringRegular {
 		return errors.New("riattivazione rifiutata: controllo recente regolare, modello affidabile e nessuna operazione incerta richiesti")
 	}
-	if _, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=0,block_reason='' WHERE id=1`); err != nil {
+	if _, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=0,block_reason='',manual_paused=0,manual_pause_reason='' WHERE id=1`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -195,7 +235,7 @@ func (s *Store) RequestQuarantine(backupID, origin, actor, reason string, now ti
 	var blocked bool
 	var blockReason, timezone string
 	var revision int64
-	if err = tx.QueryRow(`SELECT deletion_blocked,block_reason,timezone,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &timezone, &revision); err != nil {
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),CASE WHEN manual_paused THEN manual_pause_reason ELSE block_reason END,timezone,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &timezone, &revision); err != nil {
 		return out, err
 	}
 	if blocked {
@@ -241,6 +281,9 @@ func (s *Store) RequestQuarantine(backupID, origin, actor, reason string, now ti
 	if copies <= 1 {
 		return out, model.ErrLastCopy
 	}
+	if err = checkRetentionMinimumTx(tx, backupID, now); err != nil {
+		return out, err
+	}
 	transition, err := tx.Exec(`UPDATE backups SET status='deleting' WHERE id=? AND status='complete'`, backupID)
 	if err != nil {
 		return out, err
@@ -276,7 +319,7 @@ func (s *Store) RequestPurge(backupID, origin, actor, reason string, now time.Ti
 	var blocked bool
 	var blockReason, status, keyID string
 	var revision, notBefore int64
-	if err = tx.QueryRow(`SELECT deletion_blocked,block_reason,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &revision); err != nil {
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),CASE WHEN manual_paused THEN manual_pause_reason ELSE block_reason END,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &revision); err != nil {
 		return out, err
 	}
 	if blocked {
@@ -298,6 +341,9 @@ func (s *Store) RequestPurge(backupID, origin, actor, reason string, now time.Ti
 	}
 	if acknowledgedMissing != 0 {
 		return out, errors.New("backup riconosciuto come definitivamente mancante")
+	}
+	if err = checkRetentionMinimumTx(tx, backupID, now); err != nil {
+		return out, err
 	}
 	if notBefore == 0 || now.Unix() < notBefore {
 		return out, model.ErrTooEarly
@@ -379,7 +425,7 @@ func (s *Store) AuthorizeOperation(operationID int64, lease model.MaintenanceLea
 	}
 	var blocked bool
 	var currentRevision int64
-	if err = tx.QueryRow(`SELECT deletion_blocked,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &currentRevision); err != nil {
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &currentRevision); err != nil {
 		return out, err
 	}
 	if err = scanOperation(tx.QueryRow(`SELECT id,backup_id,kind,state,origin,actor,reason,revision,requested_at,authorized_at,completed_at,error,lease_generation,execution_committed FROM retention_operations WHERE id=?`, operationID), &out); err != nil {
@@ -408,6 +454,9 @@ func (s *Store) AuthorizeOperation(operationID int64, lease model.MaintenanceLea
 		return out, model.ErrRetentionBlocked
 	}
 	if out.Kind != "recover" {
+		if err = checkRetentionMinimumTx(tx, out.BackupID, now); err != nil {
+			return out, err
+		}
 		var revoked bool
 		if err = tx.QueryRow(`SELECT k.revoked FROM backups b JOIN keys k ON k.id=b.key_id WHERE b.id=?`, out.BackupID).Scan(&revoked); err != nil {
 			return out, err
@@ -473,7 +522,7 @@ func (s *Store) ValidateOperation(operationID int64, ticket string, lease model.
 	}
 	var blocked bool
 	var revision int64
-	if err = tx.QueryRow(`SELECT deletion_blocked,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &revision); err != nil {
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &revision); err != nil {
 		return err
 	}
 	if op.State != "authorized" || hash == "" || ticketHash(ticket) != hash || op.LeaseGeneration != lease.Generation {
@@ -489,6 +538,9 @@ func (s *Store) ValidateOperation(operationID int64, ticket string, lease model.
 		return model.ErrRetentionBlocked
 	}
 	if op.Kind != "recover" {
+		if err = checkRetentionMinimumTx(tx, op.BackupID, now); err != nil {
+			return err
+		}
 		var revoked bool
 		if err = tx.QueryRow(`SELECT k.revoked FROM backups b JOIN keys k ON k.id=b.key_id WHERE b.id=?`, op.BackupID).Scan(&revoked); err != nil {
 			return err
@@ -965,7 +1017,7 @@ func (s *Store) TryClearResolvedMaintenanceBlock(operationID int64, now time.Tim
 	var blocked bool
 	var blockReason, state string
 	var revision, lastCheck int64
-	if err = tx.QueryRow(`SELECT deletion_blocked,block_reason,monitoring_state,model_revision,last_check_at
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),block_reason,monitoring_state,model_revision,last_check_at
  FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &state, &revision, &lastCheck); err != nil {
 		return false, err
 	}
@@ -988,7 +1040,7 @@ func (s *Store) TryClearResolvedMaintenanceBlock(operationID int64, now time.Tim
 		return false, tx.Commit()
 	}
 	res, err := tx.Exec(`UPDATE automation_state SET deletion_blocked=0,block_reason=''
- WHERE id=1 AND deletion_blocked=1 AND block_reason=?`, "anomalia: "+detail)
+ WHERE id=1 AND manual_paused=0 AND deletion_blocked=1 AND block_reason=?`, "anomalia: "+detail)
 	if err != nil {
 		return false, err
 	}

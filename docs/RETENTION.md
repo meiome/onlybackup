@@ -1,12 +1,17 @@
 # Monitoring and retention
 
-OnlyBackup retention is opt-in. The current catalog schema is v9. An upgrade
+OnlyBackup retention is opt-in. The current catalog schema is v10. An upgrade
 that passes through v4 creates the cold copy `metadata.db.v4.cold-copy`; the
 v6-to-v7 migration adds the monitoring history without inventing earlier
 checks. The v7-to-v8 migration adds lease generations, invalidates the old
 lease, and leaves existing authorized work for physical reconciliation.
 The v8-to-v9 migration adds a durable final-permission marker; existing tickets
-remain provisional. Stop maintenance before upgrading and upgrade writer and
+remain provisional. The v9-to-v10 migration separates manual pauses from automatic
+blocks and copies the existing archive minimum to each existing key. It does not
+recalculate or reduce that minimum. Since old blocks do not reliably identify
+their original cause, every existing block also becomes an administrative hold;
+after a regular check, use `retention resume` to release it explicitly.
+Stop maintenance before upgrading and upgrade writer and
 maintenance together: older maintenance binaries do not take the execution lock.
 The migrations preserve existing enablement and blocks; upgrading does not
 enable deletion on an archive where it was disabled. The receiver and existing
@@ -134,21 +139,48 @@ The outcomes are `completed_clean`, `completed_with_anomalies`, and `failed`;
 a live attempt is shown as `running`. Detailed incidents remain in
 `monitoring anomalies`.
 
-The common window `D` is fixed after learning, never below seven complete days
-plus today. For each expected copy, the forecast applies learned non-negative
-growth and a 20% safety margin. It sums multiple copies and uses the largest
-rolling 48-hour total whose window starts during the next seven days. That same
-48-hour forecast is used to calculate `D` and to select automatic cleanup,
-together with the writer's unchanged free-space reserve. `D` is only a
-candidate boundary; nothing is deleted on a birthday while the disk is below
-the trigger.
+The administrator sets a minimum number of complete civil days **per key**;
+the current day is additionally protected. Configure it before enabling cleanup:
+
+```bash
+sudo onlybackup-admin --state /var/lib/onlybackup keys list
+sudo onlybackup-admin --state /var/lib/onlybackup retention minimum --key KEY_ID --days 30
+sudo onlybackup-admin --state /var/lib/onlybackup automation status
+```
+
+`key_retention_days` shows the effective minimum of every key. New archives
+default to seven days; upgraded archives preserve the previous archive default
+for new keys until an explicit per-key value is set. Accepted values are 7 to
+365000 days. Learning and relearning never change these settings. The minimum
+applies to every backup associated with that key, including manual deletion.
+The writer rechecks it at the request, provisional authorization, and final
+permission stages. Increasing a minimum also protects queued work that has not
+received final permission; already committed physical operations may finish.
+
+The actual retained history may be much longer than this minimum: no automatic
+cleanup begins below the disk trigger. As backup sizes grow, history can shrink
+only down to the configured minima. If these minima no longer fit, monitoring
+reports the capacity problem and does not lower them.
+
+For each expected copy, the disk forecast applies learned non-negative growth
+and a 20% safety margin. It sums multiple copies and uses the largest rolling
+48-hour total whose window starts during the next seven days, together with the
+writer's unchanged free-space reserve. This forecast guides cleanup volume and
+capacity warnings, never the configured minima. Periodic quota checks project
+the next unsatisfied scheduled backup and copies still pending within the
+30-minute tolerance, using the largest predicted size. Received copies are
+matched with the same one-to-one rules used by monitoring, including across
+midnight. Predictions include growth accumulated since the model's learning
+date; insufficient quota produces an anomaly notice with the available and
+predicted bytes, even when physical disk space is still available.
 
 New automatic requests begin only when the filesystem containing `backups` is
 at least 80.00% physically occupied. At 79.99% nothing is selected. Each cycle
 selects enough of the oldest complete eligible days to release at least 10% of
 the filesystem capacity, or more when required to return below 80% after the
-48-hour forecast. Already pending bytes count toward that amount. Current-day
-files, active uploads, revoked-key files, days protected by `D`, uncertain
+48-hour forecast. Pending bytes count toward that amount only while still outside the current
+minimum and belonging to a non-revoked key. Current-day
+files, active uploads, revoked-key files, days protected by each key's minimum, uncertain
 files, and the last recoverable copy of a key are excluded. If every legal
 candidate is still insufficient, all legal candidates are requested and a
 daily deduplicated anomaly mail reports required, selectable, and missing
@@ -204,9 +236,11 @@ cycle completes a recent regular monitoring check, OnlyBackup removes the
 matching operation block and may retry without an administrative `resume`.
 An uncertain outcome remains blocked. A manual pause, cancellation, initial
 activation requirement, or another anomaly is never cleared by this recovery.
-There is a separate known limitation of manual pause: a later anomaly exclusion
-can clear its block. Treat `retention pause` as an operator action that needs
-status checks, not an infallible persistent stop switch.
+Manual pause and its reason are stored independently of automatic blocks.
+Anomaly exclusions, resolutions, regular checks, restarts, and relearning never
+clear it. Only a successful administrative `retention resume` releases it.
+`automation status` exposes `manual_paused` and `manual_pause_reason`; effective
+`deletion_blocked` remains true while either kind of hold is active.
 This also covers errors reported after the physical change (for example, a
 directory sync failure) and an earlier uncertain result that a later check can
 verify as intact or completed. Both operation-specific failure and uncertainty
@@ -272,8 +306,9 @@ from a terminal or an intentionally constructed pipe or script:
 sudo onlybackup-admin --state /var/lib/onlybackup cancellazione
 ```
 
-A manual request may be below 80% and inside `D`, but never for today, the last
-recoverable copy, or while blocked. The writer rechecks after selection.
+A manual request may be below 80%, but never inside the key's configured minimum,
+for today, the last recoverable copy, or while blocked. The writer rechecks after
+selection and before final permission.
 
 Use the quarantine console to cancel a not-yet-authorized request or request a
 restore before purge:

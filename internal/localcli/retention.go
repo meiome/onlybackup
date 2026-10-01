@@ -86,7 +86,7 @@ func retentionAdmin(args []string, root, adminSocket string, out, errOut io.Writ
 		return true, Print(out, response)
 	case "retention":
 		if len(args) < 2 {
-			return true, errors.New("retention richiede simulate, enable, pause o resume")
+			return true, errors.New("retention richiede simulate, minimum, enable, pause o resume")
 		}
 		switch args[1] {
 		case "simulate":
@@ -100,6 +100,21 @@ func retentionAdmin(args []string, root, adminSocket string, out, errOut io.Writ
 			}
 			var response any
 			if err := call("POST", "/v1/automation/enable", map[string]string{}, &response); err != nil {
+				return true, err
+			}
+			return true, Print(out, response)
+		case "minimum":
+			f := flags("retention minimum", errOut)
+			key := f.String("key", "", "ID della chiave")
+			days := f.Int("days", 0, "giorni minimi da conservare (almeno 7)")
+			if err := parse(f, args[2:]); err != nil {
+				return true, err
+			}
+			if !model.ValidID(*key) || *days < policy.MinimumDays {
+				return true, errors.New("specificare --key ID e --days (almeno 7)")
+			}
+			var response any
+			if err := call("POST", "/v1/retention/minimum", map[string]any{"key_id": *key, "days": *days}, &response); err != nil {
 				return true, err
 			}
 			return true, Print(out, response)
@@ -336,6 +351,14 @@ func guidedDeletion(call func(string, string, any, any) error, out io.Writer) er
 				reasons = append(reasons, "giornata corrente")
 			}
 		}
+		days := max(inventory.Status.RetentionDaysForKey(key.ID), policy.MinimumDays)
+		protected, protectionErr := policy.RetentionProtected(backup, time.Now(), loc.String(), days)
+		if protectionErr != nil {
+			return protectionErr
+		}
+		if protected {
+			reasons = append(reasons, fmt.Sprintf("minimo di %d giorni", days))
+		}
 		eligibility := "selezionabile"
 		if len(reasons) != 0 {
 			eligibility = "non selezionabile: " + strings.Join(reasons, ", ")
@@ -456,7 +479,13 @@ func simulateRetention(call func(string, string, any, any) error, root string, o
 	var pending uint64
 	for _, backup := range inventory.Backups {
 		if backup.Status == model.BackupDeleting || backup.Status == model.BackupQuarantined || backup.Status == model.BackupPurging {
-			pending += uint64(backup.Size)
+			protected, err := policy.RetentionProtected(backup, now, status.Timezone, status.RetentionDaysForKey(backup.KeyID))
+			if err != nil {
+				return err
+			}
+			if !protected && !revoked[backup.KeyID] {
+				pending += uint64(backup.Size)
+			}
 		}
 	}
 	var learnedModels []policy.KeyModel
@@ -480,7 +509,7 @@ func simulateRetention(call func(string, string, any, any) error, root string, o
 	}
 	selection, err := policy.Select(policy.SelectionInput{Now: now, Timezone: status.Timezone,
 		Filesystem:           policy.Filesystem{Blocks: stat.Blocks, Bfree: stat.Bfree, Bavail: stat.Bavail, BlockSize: uint64(stat.Bsize)},
-		ThresholdBasisPoints: status.ThresholdBasis, RetentionDays: status.RetentionDays, Expected48hBytes: expected48h, PendingPurgeBytes: pending,
+		ThresholdBasisPoints: status.ThresholdBasis, RetentionDays: status.RetentionDays, KeyRetentionDays: status.KeyRetentionDays, Expected48hBytes: expected48h, PendingPurgeBytes: pending,
 		Backups: inventory.Backups, RevokedKeys: revoked})
 	if err != nil {
 		return err

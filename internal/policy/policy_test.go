@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -181,15 +182,6 @@ func TestLearnUsesCurrentWindowForScheduleTime(t *testing.T) {
 	}
 }
 
-func TestQuarantineCapacityWindow(t *testing.T) {
-	if days, ok := EstimateRetentionDays(12_000, 0, 1_000, 1_000); !ok || days != 8 {
-		t.Fatalf("unexpected D: %d %t", days, ok)
-	}
-	if _, ok := EstimateRetentionDays(9_000, 0, 1_000, 1_000); ok {
-		t.Fatal("unsustainable seven days accepted")
-	}
-}
-
 func TestCheckHandlesDSTCivilAppointments(t *testing.T) {
 	loc, err := time.LoadLocation("Europe/Rome")
 	if err != nil {
@@ -330,5 +322,111 @@ func TestCheckPeriodUsesCivilAppointmentsAcrossDST(t *testing.T) {
 		if findings := CheckPeriod(learned, observations, from, to, to); len(findings) != 0 {
 			t.Fatalf("appuntamenti DST %s: %+v", date.Format("2006-01-02"), findings)
 		}
+	}
+}
+
+func TestSelectionRespectsDifferentKeyMinimaAndCivilBoundary(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Rome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, loc)
+	cutoff := localMidnight(now, loc).AddDate(0, 0, -7)
+	items := []model.Backup{
+		backup("old-a", "a", now.AddDate(0, 0, -20), 100, model.BackupComplete),
+		backup("old-b", "b", now.AddDate(0, 0, -20), 100, model.BackupComplete),
+		backup("border", "a", cutoff, 100, model.BackupComplete),
+		backup("outside", "a", cutoff.Add(-time.Second), 100, model.BackupComplete),
+		backup("today-a", "a", now, 100, model.BackupComplete),
+		backup("today-b", "b", now, 100, model.BackupComplete),
+	}
+	in := SelectionInput{Now: now, Timezone: "Europe/Rome", Filesystem: Filesystem{Blocks: 10000, Bfree: 2000, Bavail: 2000, BlockSize: 1}, ThresholdBasisPoints: 8000, RetentionDays: 7, KeyRetentionDays: map[string]int{"a": 7, "b": 30}, Backups: items}
+	result, err := Select(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Candidates) != 2 || result.Candidates[0].ID != "old-a" || result.Candidates[1].ID != "outside" || result.ShortfallBytes != 800 {
+		t.Fatalf("minima not respected: %+v", result)
+	}
+	in.Filesystem.Bfree = 2001
+	result, err = Select(in)
+	if err != nil || len(result.Candidates) != 0 {
+		t.Fatalf("selection below threshold: %+v %v", result, err)
+	}
+}
+
+func TestNextBackupForecastUsesNextAppointmentAndModelAge(t *testing.T) {
+	now := time.Date(2026, 9, 29, 9, 0, 0, 0, time.UTC)
+	learned := KeyModel{KeyID: "key", Timezone: "UTC", LearnedAt: now.AddDate(0, 0, -30), Reliable: true, Schedule: map[time.Weekday][]Appointment{
+		time.Tuesday:   {{MinuteOfDay: 8 * 60, MedianSize: 9000}, {MinuteOfDay: 12 * 60, MedianSize: 100, GrowthPerDay: 10}},
+		time.Wednesday: {{MinuteOfDay: 12 * 60, MedianSize: 2000}},
+	}}
+	size, err := ForecastNextBackup(learned, now, nil)
+	if err != nil || size != 402 {
+		t.Fatalf("next forecast=%d err=%v", size, err)
+	}
+	learned.Schedule = map[time.Weekday][]Appointment{time.Tuesday: {{MinuteOfDay: 8 * 60, MedianSize: 100, GrowthPerDay: 10}}}
+	size, err = ForecastNextBackup(learned, now, nil)
+	if err != nil || size != 470 {
+		t.Fatalf("weekly forecast=%d err=%v", size, err)
+	}
+	learned.Schedule[time.Tuesday][0].GrowthPerDay = math.Inf(1)
+	if _, err = ForecastNextBackup(learned, now, nil); err == nil {
+		t.Fatal("invalid growth accepted")
+	}
+}
+
+func TestQuotaForecastPendingAppointments(t *testing.T) {
+	base := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name         string
+		now          time.Time
+		observations []Observation
+		want         uint64
+	}{
+		{"nominal time", base, nil, 400},
+		{"pending within tolerance", base.Add(5 * time.Minute), nil, 400},
+		{"tolerance boundary", base.Add(ScheduleTolerance), nil, 400},
+		{"expired", base.Add(ScheduleTolerance + time.Nanosecond), nil, 1},
+		{"received", base.Add(5 * time.Minute), []Observation{{KeyID: "key", At: base, Size: 400}}, 1},
+		{"early receipt", base.Add(-5 * time.Minute), []Observation{{KeyID: "key", At: base.Add(-10 * time.Minute), Size: 400}}, 1},
+		{"other key", base.Add(5 * time.Minute), []Observation{{KeyID: "other", At: base, Size: 400}}, 400},
+		{"future receipt ignored", base.Add(5 * time.Minute), []Observation{{KeyID: "key", At: base.Add(10 * time.Minute), Size: 400}}, 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := KeyModel{KeyID: "key", Timezone: "UTC", LearnedAt: base.AddDate(0, 0, -30), Reliable: true, Schedule: map[time.Weekday][]Appointment{
+				time.Tuesday:   {{MinuteOfDay: 720, MedianSize: 100, GrowthPerDay: 10}},
+				time.Wednesday: {{MinuteOfDay: 720, MedianSize: 1}},
+			}}
+			want := tc.want
+			got, err := ForecastNextBackup(m, tc.now, tc.observations)
+			if err != nil || got != want {
+				t.Fatalf("forecast=%d want=%d err=%v", got, want, err)
+			}
+		})
+	}
+}
+
+func TestQuotaForecastMatchingAcrossMidnight(t *testing.T) {
+	now := time.Date(2026, 9, 30, 0, 5, 0, 0, time.UTC)
+	m := KeyModel{KeyID: "key", Timezone: "UTC", LearnedAt: now.AddDate(0, 0, -30), Reliable: true, Schedule: map[time.Weekday][]Appointment{
+		time.Tuesday:   {{MinuteOfDay: 23*60 + 50, MedianSize: 100}},
+		time.Wednesday: {{MinuteOfDay: 10, MedianSize: 200}, {MinuteOfDay: 720, MedianSize: 1}},
+	}}
+	// A single copy in overlapping windows satisfies only the earlier slot.
+	obs := []Observation{{BackupID: "a", KeyID: "key", At: now.Add(-10 * time.Minute), Size: 100}}
+	got, err := ForecastNextBackup(m, now, obs)
+	if err != nil || got != 200 {
+		t.Fatalf("forecast=%d err=%v", got, err)
+	}
+	obs = append(obs, Observation{BackupID: "b", KeyID: "key", At: now, Size: 200})
+	got, err = ForecastNextBackup(m, now, obs)
+	if err != nil || got != 1 {
+		t.Fatalf("satisfied forecast=%d err=%v", got, err)
+	}
+	delete(m.Schedule, time.Wednesday)
+	got, err = ForecastNextBackup(m, now, nil)
+	if err != nil || got != 100 {
+		t.Fatalf("previous day pending forecast=%d err=%v", got, err)
 	}
 }

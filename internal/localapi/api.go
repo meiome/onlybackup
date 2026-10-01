@@ -199,6 +199,20 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 200, map[string]string{"status": "enabled"})
+	case "/v1/retention/minimum":
+		var request struct {
+			KeyID string `json:"key_id"`
+			Days  int    `json:"days"`
+		}
+		if err := decode(r, &request); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		if err := a.Store.SetKeyRetentionDays(request.KeyID, request.Days); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "configured"})
 	case "/v1/retention/pause":
 		var request struct {
 			Reason string `json:"reason"`
@@ -672,19 +686,6 @@ func (a *API) serveMaintenance(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 200, map[string]string{"status": "recorded"})
-	case "/v1/retention/window":
-		var request struct {
-			Days int `json:"days"`
-		}
-		if err := decode(r, &request); err != nil {
-			writeError(w, 400, err.Error())
-			return
-		}
-		if err := a.Store.SetRetentionDays(request.Days); err != nil {
-			writeError(w, 400, err.Error())
-			return
-		}
-		writeJSON(w, 200, map[string]string{"status": "fixed"})
 	case "/v1/report/queue":
 		var request struct {
 			StableID string `json:"stable_id"`

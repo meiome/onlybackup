@@ -21,8 +21,9 @@ maintenance <---------------- maintenance socket -----'
 > this repository must be checked against the installed version; local tests do
 > not establish that they have been released or deployed. Go, race, smoke,
 > system, and isolation tests passed for the documented retention worktree.
-> The release workflow runs `make check` and `make race`; other targets require
-> separate runs.
+> Linux CI on pushes to `main` and pull requests runs `make check`, `make race`,
+> `make smoke`, and `make system-test`. The release workflow runs `make check`
+> and `make race`; isolation and database restore checks require separate runs.
 
 ## Build and test from source
 
@@ -121,12 +122,16 @@ readable content. OnlyBackup accepts files that have already been prepared; use
 - [Security model](docs/SECURITY.md)
 - [Public protocol](docs/PROTOCOL.md)
 - [Restore testing](docs/RESTORE-TEST.md)
+- [Contributing](CONTRIBUTING.md)
+- [Release changes](CHANGELOG.md)
 
 Retention grants durable permission for one physical operation at final
 validation. Revocation blocks new permissions but does not cancel committed
-work; quarantine and purge need separate permissions. Manual pause has a known
-limitation: a later anomaly exclusion can clear its block, so operators must
-recheck the effective status. See the retention guide for recovery after a
-crash and for the remaining safety limits.
+work; quarantine and purge need separate permissions. Manual pause and its reason
+persist independently of automatic blocks and require an explicit successful
+administrative resume. Administrator-configured per-key retention minima are
+checked before each new destructive permission. These changes require schema
+v10 and matching binaries; verify the installed version before relying on them.
+See the retention guide for recovery after a crash and the remaining safety limits.
 
 Licensed under the [GNU AGPL-3.0](LICENSE).

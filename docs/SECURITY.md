@@ -91,8 +91,8 @@ directory, monitor its capacity, and inspect residuals without weakening ACLs.
 ## Operational limits
 
 Opt-in retention uses an 80% physical-use trigger, a minimum cleanup target of
-10% of filesystem capacity, a fixed learned window, current-day and last-copy
-exclusions, generation-bound per-operation tickets, and at least 48 hours of
+10% of filesystem capacity, administrator-configured per-key minima, current-day
+and last-copy exclusions, generation-bound per-operation tickets, and at least 48 hours of
 quarantine. Blocking anomalies stop new destructive authorizations. A
 physically reconciled transient operation error can remove only its own block
 after a fresh regular check; other blocking incidents retain their normal
@@ -106,8 +106,10 @@ destructive work is blocked. A local directory lock prevents overlapping
 physical executors even if the protocol lease expires. After a crash a new
 cycle may wait for the old lease for up to ten minutes; a stuck process has no
 timed failover. Uncertain physical outcomes require verification or repair.
-Manual pause has a known limitation: a later anomaly exclusion can clear its
-block, so operators must inspect the effective status after exclusions.
+Manual pause and its reason are persisted independently of automatic blocks.
+Only an explicit successful administrative resume clears the pause. Per-key
+retention minima are also rechecked at every new destructive authorization,
+including manual requests; learning cannot overwrite administrator settings.
 
 The maintenance service alone performs physical moves and unlink. Manual
 removal of archive files or catalog rows is unsupported and is detected as an
@@ -141,6 +143,8 @@ or offline copy.
   [RESTORE-TEST.md](RESTORE-TEST.md).
 - `.github/workflows/client-windows.yml`: client, ACL, encryption, and recovery
   tests on Windows Server 2022, plus native AMD64 builds.
+- `.github/workflows/server-linux.yml`: `make check`, `make race`, `make smoke`,
+  and `make system-test` on pushes to `main` and pull requests.
 
 The Docker test verifies Linux filesystem permissions, not WORM storage or
 resistance to root and physical disk failures. Production deployment separately
@@ -148,9 +152,23 @@ validates the supplied systemd units. No test can guarantee the recoverability
 of future backups. Windows tests do not cover every desktop release, non-NTFS
 filesystems, or local enterprise policies.
 
-The release workflow runs `make check` and `make race`. Smoke, system,
-isolation, and MariaDB targets are separate checks, and production restore
-testing is a separate operational exercise.
+The release workflow runs `make check` and `make race`. Linux CI also runs smoke
+and system tests. Isolation and MariaDB targets require separate runs, and
+production restore testing is a separate operational exercise.
+
+## Reporting a vulnerability
+
+Private vulnerability reporting is enabled for OnlyBackup. Use
+[GitHub's private reporting form](https://github.com/meiome/onlybackup/security/advisories/new),
+or open Security, then Advisories, then Report a vulnerability in the repository.
+Do not post exploit details, deposit credentials, private age identities, or
+production data in a public issue.
+
+A useful report identifies the affected version or commit, the relevant
+component, impact, and minimal reproduction steps using synthetic data. Ordinary
+bugs without sensitive security details can follow
+[the contributor guidance](../CONTRIBUTING.md). This project does not currently
+publish a security response deadline or a supported-version policy.
 
 ## Compatibility
 
@@ -161,6 +179,9 @@ audit. The first writable v4 open checkpoints SQLite, creates
 disabled. Schema v7 adds monitoring history; schema v8 adds lease generations
 and binds operation tickets to them. Schema v9 records definitive per-operation
 permissions; revocation after this point affects only future permissions.
+Schema v10 stores manual pauses and per-key minima separately. Migration
+preserves existing minima and conservatively retains existing blocks as
+administrative holds until explicit resume.
 Maintenance holds a local kernel lock throughout each cycle so lease expiry
 cannot admit a concurrent physical executor. Stop maintenance before upgrading
 and upgrade writer and maintenance together; old binaries do not take this lock.

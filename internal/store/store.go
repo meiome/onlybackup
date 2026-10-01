@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS automation_state (
  id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 0,
  mail_tested INTEGER NOT NULL DEFAULT 0, monitoring_state TEXT NOT NULL DEFAULT 'APPRENDIMENTO',
  deletion_blocked INTEGER NOT NULL DEFAULT 1, block_reason TEXT NOT NULL DEFAULT 'automazione non configurata',
+ manual_paused INTEGER NOT NULL DEFAULT 0 CHECK(manual_paused IN (0,1)),
+ manual_pause_reason TEXT NOT NULL DEFAULT '',
  timezone TEXT NOT NULL DEFAULT '', retention_days INTEGER NOT NULL DEFAULT 7 CHECK(retention_days>=7),
 	threshold_basis_points INTEGER NOT NULL DEFAULT 8000 CHECK(threshold_basis_points BETWEEN 1 AND 10000),
 	reserve_free INTEGER NOT NULL DEFAULT 0 CHECK(reserve_free>=0),
@@ -64,6 +66,9 @@ CREATE TABLE IF NOT EXISTS automation_state (
  smtp_tls INTEGER NOT NULL DEFAULT 1, mail_from TEXT NOT NULL DEFAULT '', mail_to TEXT NOT NULL DEFAULT ''
 );
 INSERT OR IGNORE INTO automation_state(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS key_retention (
+ key_id TEXT PRIMARY KEY REFERENCES keys(id), days INTEGER NOT NULL CHECK(days>=7)
+);
 CREATE TABLE IF NOT EXISTS monitoring_models (
  key_id TEXT NOT NULL REFERENCES keys(id), revision INTEGER NOT NULL, learned_at INTEGER NOT NULL,
  timezone TEXT NOT NULL, retention_days INTEGER NOT NULL CHECK(retention_days>=7), model_json TEXT NOT NULL,
@@ -128,7 +133,7 @@ CREATE TABLE IF NOT EXISTS monitoring_check_models (
  FOREIGN KEY(key_id,revision) REFERENCES monitoring_models(key_id,revision), CHECK(covered_to>=covered_from)
 );
 CREATE INDEX IF NOT EXISTS monitoring_check_models_resume ON monitoring_check_models(key_id,revision,covered_to DESC);
-PRAGMA user_version=9;
+PRAGMA user_version=10;
 `
 
 func Open(path string, readonly bool) (*Store, error) {
@@ -272,7 +277,14 @@ func Open(path string, readonly bool) (*Store, error) {
 		}
 		version = 9
 	}
-	if version < 1 || version > 9 {
+	if version == 9 && !readonly {
+		if err = migrateV9ToV10(db); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrazione schema database: %w", err)
+		}
+		version = 10
+	}
+	if version < 1 || version > 10 {
 		db.Close()
 		return nil, errors.New("schema database non supportato; eseguire init per un nuovo archivio")
 	}

@@ -39,7 +39,7 @@ func Admin(args []string, out, errOut io.Writer) error {
 	root := global.String("state", "./var/onlybackup", "directory locale dell'archivio")
 	adminSocket := global.String("admin-socket", "", "socket Unix amministrativa (default: STATE/admin.sock)")
 	global.Usage = func() {
-		fmt.Fprintln(errOut, "Uso: onlybackup-admin [--state DIR] [--admin-socket PATH] init | profiles list/set | keys create/list/revoke/assign | backups list/status | quota | automation setup/status | mail test | retention simulate/enable/pause/resume | monitoring checks/relearn/anomalies/exclusions/acknowledge/exclude | cancellazione | quarantena\nLe mutazioni retention richiedono il writer attivo e mantengono conferme e audit anche da SSH, Mosh, pipe o script.")
+		fmt.Fprintln(errOut, "Uso: onlybackup-admin [--state DIR] [--admin-socket PATH] init | profiles list/set | keys create/list/revoke/assign | backups list/status | quota | automation setup/status | mail test | retention simulate/minimum/enable/pause/resume | monitoring checks/relearn/anomalies/exclusions/acknowledge/exclude | cancellazione | quarantena\nLe mutazioni retention richiedono il writer attivo e mantengono conferme e audit anche da SSH, Mosh, pipe o script.")
 	}
 	if err := global.Parse(args); err != nil {
 		return err

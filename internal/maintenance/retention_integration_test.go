@@ -685,7 +685,7 @@ func TestReliableKeyIsCheckedWhileNewKeyLearns(t *testing.T) {
 	if err = service.call(context.Background(), "POST", "/v1/check/start", map[string]string{}, &check); err != nil {
 		t.Fatal(err)
 	}
-	findings, allReliable, _, err := service.monitor(context.Background(), snapshot, check.ID, now)
+	findings, allReliable, _, _, err := service.monitor(context.Background(), snapshot, check.ID, now)
 	if err != nil {
 		t.Fatal(err)
 	}

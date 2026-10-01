@@ -68,7 +68,7 @@ sudo onlybackup-admin --state /var/lib/onlybackup retention simulate
 
 Automatic cleanup starts only at 80% physical filesystem use, never at 79.99%,
 and each cycle targets at least 10% of total filesystem capacity. It keeps the
-current day, at least `D` complete days, the last available copy, and 48 hours
+current day, each key's configured minimum of complete days, the last available copy, and 48 hours
 of quarantine. The forecast includes every expected copy, learned growth, and
 a 20% margin, using the largest rolling 48-hour window in the next week. If the
 legal candidates are insufficient, OnlyBackup requests all of them and mails
@@ -92,9 +92,15 @@ lease. Its directory lock prevents two physical executors, but a stuck executor
 has no timed replacement. An uncertain physical outcome remains blocked until
 verified or repaired. See the retention guide before restarting a stuck cycle.
 
-`retention pause` has a known persistence limit: a later anomaly exclusion can
-clear its block. Recheck `automation status` after exclusions; do not treat the
-pause command as a permanent safety switch.
+`retention pause` persists independently of automatic anomaly blocks until an
+explicit successful `retention resume`. Excluding an incident does not remove
+the administrative pause. Inspect `manual_paused` and `manual_pause_reason` in
+`automation status`.
+
+Set a key's minimum with `retention minimum --key KEY_ID --days 30`. Learning
+never recalculates this administrator-owned value. The status field
+`key_retention_days` shows the effective minima; insufficient capacity is
+reported without reducing them. See the retention guide for migration behavior.
 
 Plan storage from backup size, frequency, intended retention period, growth,
 temporary incoming data, cold copies, and a free-space safety margin. Increasing
@@ -106,8 +112,8 @@ total. Include all current and revoked credentials when estimating physical
 archive growth.
 
 Before capacity becomes critical, expand the filesystem or migrate the complete
-state during a maintenance window. The learned `D` is not automatically reduced
-to accommodate growth; an unsustainable capacity estimate blocks deletion and
+state during a maintenance window. The configured per-key minima are never automatically
+reduced to accommodate growth; an unsustainable capacity estimate blocks deletion and
 requires administrative action.
 
 ## Credential rotation

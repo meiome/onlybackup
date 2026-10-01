@@ -520,7 +520,7 @@ func TestAcknowledgedMissingDoesNotCountAsLastRecoverableCopy(t *testing.T) {
 func TestAcknowledgedMissingQuarantinedBackupCannotBePurged(t *testing.T) {
 	s, _, token := setup(t, model.Profile{Name: "missing-purge-target", TotalBytes: 2000, MaxBackupBytes: 500, UploadsPerDay: 20, Concurrent: 2})
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
-	victim := completedBackup(t, s, token, "obi_missing_purge_12345678", now.AddDate(0, 0, -10))
+	victim := completedBackup(t, s, token, "obi_missing_purge_12345678", now.AddDate(0, 0, -11))
 	_ = completedBackup(t, s, token, "obi_valid_purge_1_12345678", now.AddDate(0, 0, -2))
 	_ = completedBackup(t, s, token, "obi_valid_purge_2_12345678", now.AddDate(0, 0, -1))
 	enableRetentionForTest(t, s, now)
@@ -772,7 +772,7 @@ func TestRevokedKeyStopsDestructiveOperationsAtEveryAuthorizationBoundary(t *tes
 			t.Run(kind+"/"+phase, func(t *testing.T) {
 				s, keyID, token := setup(t, model.Profile{Name: "revoked-operations", TotalBytes: 2000, MaxBackupBytes: 500, UploadsPerDay: 20, Concurrent: 2})
 				now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-				victim := completedBackup(t, s, token, "revoked-victim-123456789", now.AddDate(0, 0, -10))
+				victim := completedBackup(t, s, token, "revoked-victim-123456789", now.AddDate(0, 0, -11))
 				_ = completedBackup(t, s, token, "revoked-survivor-1234567", now.AddDate(0, 0, -1))
 				enableRetentionForTest(t, s, now)
 

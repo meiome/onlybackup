@@ -238,13 +238,12 @@ func (s *Service) RunOnce(ctx context.Context) (runErr error) {
 	}
 	findings = s.verifyUnexpectedFiles(findings, verified)
 	snapshot = verified
-	monitoringFindings, modelsReliable, expected48h, err := s.monitor(ctx, snapshot, check.ID, now)
+	monitoringFindings, modelsReliable, expected48h, required, err := s.monitor(ctx, snapshot, check.ID, now)
 	if err != nil {
 		return err
 	}
 	findings = append(findings, monitoringFindings...)
 	if modelsReliable {
-		expectedDaily := policy.DailyRequirement(expected48h)
 		total, used, _, measureErr := filesystem.Bytes()
 		if measureErr != nil {
 			return measureErr
@@ -260,19 +259,10 @@ func (s *Service) RunOnce(ctx context.Context) (runErr error) {
 			otherUsed = used - catalogBytes
 		}
 		reserve := uint64(snapshot.Status.ReserveFree)
-		if snapshot.Status.ModelRevision == 0 {
-			days, sustainable := policy.EstimateRetentionDays(total, otherUsed, reserve, expectedDaily)
-			if !sustainable {
-				modelsReliable = false
-				findings = append(findings, policy.Finding{StableKey: "capacity:retention-window", Kind: "capacity", Detail: "capacita insufficiente per 7 giorni completi, giorno corrente, quarantena di 48 ore e riserva"})
-			} else if err = s.call(ctx, "POST", "/v1/retention/window", map[string]int{"days": days}, nil); err != nil {
-				return err
-			}
-		} else if expectedDaily > 0 {
-			requiredDays := uint64(snapshot.Status.RetentionDays + 3)
-			if expectedDaily > ^uint64(0)/requiredDays || total <= otherUsed || total-otherUsed <= reserve || total-otherUsed-reserve < expectedDaily*requiredDays {
-				findings = append(findings, policy.Finding{StableKey: "capacity:retention-window", Kind: "capacity", Detail: "la finestra D fissata non e piu sostenibile; intervento amministrativo richiesto"})
-			}
+		// Configuration belongs to the administrator. Forecast only whether
+		// those minima fit; never derive or reduce them from disk capacity.
+		if total <= otherUsed || total-otherUsed <= reserve || total-otherUsed-reserve < required {
+			findings = append(findings, policy.Finding{StableKey: "capacity:retention-window", Kind: "capacity", Detail: "spazio insufficiente per i minimi di conservazione impostati per chiave, giorno corrente, quarantena e riserva; intervento amministrativo richiesto"})
 		}
 		_, _, available, _ := filesystem.Bytes()
 		if expected48h > ^uint64(0)-reserve || available < expected48h+reserve {
@@ -488,9 +478,9 @@ func observations(backups []model.Backup, exclusions []model.AnomalyExclusion) [
 	return result
 }
 
-func (s *Service) monitor(ctx context.Context, snapshot localclient.Snapshot, checkID int64, now time.Time) ([]policy.Finding, bool, uint64, error) {
+func (s *Service) monitor(ctx context.Context, snapshot localclient.Snapshot, checkID int64, now time.Time) ([]policy.Finding, bool, uint64, uint64, error) {
 	if snapshot.Status.Timezone == "" {
-		return nil, false, 0, nil
+		return nil, false, 0, 0, nil
 	}
 	all := observations(snapshot.Backups, snapshot.Exclusions)
 	models := make(map[string]policy.KeyModel)
@@ -516,13 +506,13 @@ func (s *Service) monitor(ctx context.Context, snapshot localclient.Snapshot, ch
 			var err error
 			learned, err = policy.Learn(key.ID, snapshot.Status.Timezone, all, now)
 			if err != nil {
-				return nil, false, 0, err
+				return nil, false, 0, 0, err
 			}
 			request := map[string]any{"key_id": key.ID, "timezone": snapshot.Status.Timezone, "revision": revision,
-				"retention_days": max(snapshot.Status.RetentionDays, policy.MinimumDays), "model": learned,
+				"retention_days": max(snapshot.Status.RetentionDaysForKey(key.ID), policy.MinimumDays), "model": learned,
 				"reliable": learned.Reliable, "review": learned.ReviewRequired}
 			if err = s.call(ctx, "POST", "/v1/model/save", request, nil); err != nil {
-				return nil, false, 0, err
+				return nil, false, 0, 0, err
 			}
 			models[key.ID] = learned
 		}
@@ -536,12 +526,12 @@ func (s *Service) monitor(ctx context.Context, snapshot localclient.Snapshot, ch
 	var findings []policy.Finding
 	var planned model.MonitoringCheck
 	if err := s.call(ctx, "POST", "/v1/check/plan", map[string]int64{"id": checkID}, &planned); err != nil {
-		return nil, false, 0, err
+		return nil, false, 0, 0, err
 	}
 	for _, scope := range planned.Models {
 		var learned policy.KeyModel
 		if err := json.Unmarshal(scope.Model, &learned); err != nil {
-			return nil, false, 0, err
+			return nil, false, 0, 0, err
 		}
 		findings = append(findings, policy.CheckPeriod(learned, all, time.Unix(scope.CoveredFrom, 0).UTC(), time.Unix(scope.CoveredTo, 0).UTC(), now)...)
 	}
@@ -559,30 +549,42 @@ func (s *Service) monitor(ctx context.Context, snapshot localclient.Snapshot, ch
 			continue
 		}
 		forecastModels = append(forecastModels, learned)
-		var nextSize uint64
-		for _, appointments := range learned.Schedule {
-			for _, appointment := range appointments {
-				projected := float64(appointment.MedianSize) + appointment.GrowthPerDay*2
-				if projected > float64(nextSize) {
-					nextSize = uint64(projected)
-				}
-			}
+		nextSize, forecastErr := policy.ForecastNextBackup(learned, now, all)
+		if forecastErr != nil {
+			return nil, false, 0, 0, forecastErr
 		}
 		if quota, ok := quotaByKey[key.ID]; ok {
 			available := quota.Profile.TotalBytes - quota.Used - quota.Reserved
 			if available < 0 || uint64(available) < nextSize {
-				findings = append(findings, policy.Finding{StableKey: "quota:" + key.ID, Kind: "capacity", KeyID: key.ID, Detail: "quota insufficiente per il prossimo backup previsto"})
+				findings = append(findings, policy.Finding{StableKey: "quota:" + key.ID, Kind: "capacity", KeyID: key.ID, Detail: fmt.Sprintf("quota insufficiente per il prossimo backup previsto: chiave %s, disponibili %d byte, previsti %d byte", key.ID, available, nextSize)})
 			}
 		}
 	}
 	if allReliable {
+		var required uint64
+		for _, learned := range forecastModels {
+			forecast, err := policy.Forecast48Hours([]policy.KeyModel{learned}, now)
+			if err != nil {
+				return nil, false, 0, 0, err
+			}
+			daily := policy.DailyRequirement(forecast)
+			days := snapshot.Status.RetentionDaysForKey(learned.KeyID)
+			if days < policy.MinimumDays || days > 365000 {
+				return nil, false, 0, 0, errors.New("minimo di conservazione non valido")
+			}
+			span := uint64(days + 3)
+			if daily > (^uint64(0)-required)/span {
+				return nil, false, 0, 0, errors.New("previsione spazio non rappresentabile")
+			}
+			required += daily * span
+		}
 		expected48h, forecastErr := policy.Forecast48Hours(forecastModels, now)
 		if forecastErr != nil {
-			return nil, false, 0, forecastErr
+			return nil, false, 0, 0, forecastErr
 		}
-		return findings, true, expected48h, nil
+		return findings, true, expected48h, required, nil
 	}
-	return findings, false, 0, nil
+	return findings, false, 0, 0, nil
 }
 
 func (s *Service) recordFindings(ctx context.Context, snapshot localclient.Snapshot, findings []policy.Finding) error {
@@ -640,6 +642,13 @@ func (s *Service) schedulePurges(ctx context.Context, snapshot localclient.Snaps
 		if backup.Status != model.BackupQuarantined || revoked[backup.KeyID] || backup.PurgeNotBefore == 0 || now.Unix() < backup.PurgeNotBefore {
 			continue
 		}
+		protected, err := policy.RetentionProtected(backup, now, snapshot.Status.Timezone, snapshot.Status.RetentionDaysForKey(backup.KeyID))
+		if err != nil {
+			return err
+		}
+		if protected {
+			continue
+		}
 		request := map[string]any{"backup_id": backup.ID, "origin": "automatic", "actor": s.Owner, "reason": "quarantena minima completata"}
 		if err := s.call(ctx, "POST", "/v1/purge/request", request, nil); err != nil && !strings.Contains(err.Error(), "UNIQUE") {
 			return err
@@ -656,17 +665,23 @@ func (s *Service) scheduleAutomatic(ctx context.Context, snapshot localclient.Sn
 	var pending uint64
 	for _, backup := range recoverableBackups(snapshot) {
 		if backup.Status == model.BackupDeleting || backup.Status == model.BackupQuarantined || backup.Status == model.BackupPurging {
-			pending += uint64(backup.Size)
+			protected, err := policy.RetentionProtected(backup, now, snapshot.Status.Timezone, snapshot.Status.RetentionDaysForKey(backup.KeyID))
+			if err != nil {
+				return err
+			}
+			if !protected && !revoked[backup.KeyID] {
+				pending += uint64(backup.Size)
+			}
 		}
 	}
 	selection, err := policy.Select(policy.SelectionInput{Now: now, Timezone: snapshot.Status.Timezone, Filesystem: filesystem,
-		ThresholdBasisPoints: snapshot.Status.ThresholdBasis, RetentionDays: snapshot.Status.RetentionDays,
+		ThresholdBasisPoints: snapshot.Status.ThresholdBasis, RetentionDays: snapshot.Status.RetentionDays, KeyRetentionDays: snapshot.Status.KeyRetentionDays,
 		Expected48hBytes: expected48h, PendingPurgeBytes: pending, Backups: recoverableBackups(snapshot), RevokedKeys: revoked})
 	if err != nil {
 		return err
 	}
 	for _, backup := range selection.Candidates {
-		request := map[string]any{"backup_id": backup.ID, "origin": "automatic", "actor": s.Owner, "reason": "filesystem almeno all'80%; lotto minimo 10%; giorno completo oltre D"}
+		request := map[string]any{"backup_id": backup.ID, "origin": "automatic", "actor": s.Owner, "reason": "filesystem almeno all'80%; lotto minimo 10%; giorno completo oltre il minimo della chiave"}
 		if err := s.call(ctx, "POST", "/v1/quarantine/request", request, nil); err != nil {
 			return err
 		}
