@@ -116,13 +116,34 @@ func buildEmailReport(snapshot localclient.Snapshot, filesystem policy.Filesyste
 		action = "verifica i client senza copie complete"
 	case !status.Enabled:
 		action = "verifica la configurazione della retention"
-	case status.MonitoringState == model.MonitoringRegular && status.DeletionBlocked:
-		action = "verifica il monitoraggio e sblocca la retention con onlybackup-admin retention resume"
+	case reportCanSuggestResume(snapshot, now):
+		action = "controllo regolare. Cancellazione sospesa: esegui onlybackup-admin retention resume per riattivarla"
+	case status.DeletionBlocked && (status.MonitoringState == model.MonitoringRegular || status.MonitoringState == model.MonitoringPaused):
+		action = "attendi un controllo regolare prima di riattivare la cancellazione"
 	case status.MonitoringState != model.MonitoringRegular && status.MonitoringState != model.MonitoringLearning:
 		action = "verifica lo stato del monitoraggio"
 	}
 	lines = append(lines, "Azione: "+action, "Generato: "+now.In(zone).Format("02/01/2006 15:04 MST"))
 	return strings.Join(lines, "\n")
+}
+
+// A suspended status also represents a regular check with a manual pause.
+// Use the writer's current check state to distinguish it from a pause that
+// requires another check. This only changes the report, never permissions.
+func reportCanSuggestResume(snapshot localclient.Snapshot, now time.Time) bool {
+	status := snapshot.Status
+	if !status.LastCheckRegular || !status.Enabled || !status.MailTested || !status.DeletionBlocked || status.ActiveAnomalies != 0 ||
+		(status.MonitoringState != model.MonitoringRegular && status.MonitoringState != model.MonitoringPaused) ||
+		status.ModelRevision == 0 || status.LastCheckAt == 0 || status.LastCheckAt > now.Unix()+1 ||
+		now.Unix()-status.LastCheckAt > int64(10*time.Minute/time.Second) {
+		return false
+	}
+	for _, operation := range snapshot.Operations {
+		if operation.State == "authorized" {
+			return false
+		}
+	}
+	return true
 }
 
 func formatEmailBytes(size int64) string {

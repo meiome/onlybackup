@@ -30,6 +30,10 @@ func TestReportBadgeOnlyGreenWithoutProblems(t *testing.T) {
 	}
 
 	snapshot.Status.MonitoringState = model.MonitoringRegular
+	snapshot.Status.MailTested = true
+	snapshot.Status.ModelRevision = 7
+	snapshot.Status.LastCheckAt = now.Unix()
+	snapshot.Status.LastCheckRegular = true
 	blocked := buildEmailReport(snapshot, filesystem, nil, now)
 	if !strings.HasPrefix(blocked, "Esito: ATTENZIONE\n") || !strings.Contains(blocked, "retention resume") ||
 		!strings.Contains(renderMailHTML(model.MailMessage{Subject: "OnlyBackup: report periodico", Body: blocked}), "ATTENZIONE") {

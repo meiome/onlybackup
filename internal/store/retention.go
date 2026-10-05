@@ -50,6 +50,9 @@ func (s *Store) AutomationStatus() (model.AutomationStatus, error) {
 	if err = rows.Err(); err != nil {
 		return v, err
 	}
+	// Preserve the writer's real check state before presenting a regular
+	// but blocked system as suspended to administrators and reports.
+	v.LastCheckRegular = v.MonitoringState == model.MonitoringRegular
 	if v.DeletionBlocked && v.MonitoringState == model.MonitoringRegular {
 		v.MonitoringState = model.MonitoringPaused
 	}
@@ -936,6 +939,12 @@ func openAnomalyAtTx(tx *sql.Tx, stableKey, kind, keyID, backupID, detail string
 	}
 	mailID := fmt.Sprintf("anomaly:%s:%d", stableKey, now.Unix())
 	subject, body := anomalyMail(kind, detail)
+	if kind == "schedule_missing" {
+		subject, body, err = missingBackupMailTx(tx, keyID, eventAt)
+		if err != nil {
+			return false, err
+		}
+	}
 	if _, err = tx.Exec(`INSERT INTO mail_queue(stable_id,kind,subject,body,created_at,next_attempt_at) VALUES(?,'anomaly',?,?,?,?)`, mailID, subject, body, now.Unix(), now.Unix()); err != nil {
 		return false, err
 	}

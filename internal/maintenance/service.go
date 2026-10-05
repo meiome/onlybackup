@@ -317,7 +317,9 @@ func (s *Service) RunOnce(ctx context.Context) (runErr error) {
 		}
 	}
 	if snapshot.Status.NextReportAt == 0 || now.Unix() >= snapshot.Status.NextReportAt {
-		report := buildEmailReport(snapshot, filesystem, findings, now)
+		reportSnapshot := snapshot
+		reportSnapshot.Operations = refreshed.Operations
+		report := buildEmailReport(reportSnapshot, filesystem, findings, s.Now().UTC())
 		request := map[string]any{"stable_id": fmt.Sprintf("report:%d", now.Unix()/int64(72*time.Hour/time.Second)), "subject": "OnlyBackup: report periodico", "body": report}
 		request["periodic"] = true
 		if err = s.call(ctx, "POST", "/v1/report/queue", request, nil); err != nil {

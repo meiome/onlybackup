@@ -267,8 +267,10 @@ type AutomationStatus struct {
 	ReserveFree       int64          `json:"reserve_free_bytes"`
 	ModelRevision     int64          `json:"model_revision"`
 	LastCheckAt       int64          `json:"last_check_at_unix,omitempty"`
-	NextReportAt      int64          `json:"next_report_at_unix,omitempty"`
-	ActiveAnomalies   int            `json:"active_anomalies"`
+	// LastCheckRegular is false when a later event invalidated the regular check.
+	LastCheckRegular bool  `json:"last_check_regular"`
+	NextReportAt     int64 `json:"next_report_at_unix,omitempty"`
+	ActiveAnomalies  int   `json:"active_anomalies"`
 }
 
 type RetentionOperation struct {
