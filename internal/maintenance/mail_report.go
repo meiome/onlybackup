@@ -32,7 +32,7 @@ func buildEmailReport(snapshot localclient.Snapshot, filesystem policy.Filesyste
 			keysWithoutCopy++
 		}
 	}
-	problem := status.ActiveAnomalies > 0 || len(findings) > 0 || !status.Enabled ||
+	problem := status.ActiveAnomalies > 0 || len(findings) > 0 || !status.Enabled || !status.MailTested || status.ManualPaused ||
 		activeKeys == 0 || keysWithoutCopy > 0 ||
 		(status.MonitoringState != model.MonitoringLearning && status.MonitoringState != model.MonitoringRegular) ||
 		(status.MonitoringState == model.MonitoringRegular && status.DeletionBlocked)
@@ -48,8 +48,17 @@ func buildEmailReport(snapshot localclient.Snapshot, filesystem policy.Filesyste
 	}
 	retention := "attiva"
 	switch {
+	case status.ResumePending:
+		retention = "ripresa prenotata al prossimo controllo valido; cancellazioni sospese"
+	case status.ManualPaused:
+		retention = "pausa amministrativa; cancellazioni sospese"
 	case !status.Enabled:
 		retention = "da abilitare; cancellazioni sospese"
+	case status.ActivationPending:
+		retention = "attivazione automatica in attesa dei requisiti di sicurezza"
+		if !status.MailTested {
+			retention += "; prova mail richiesta"
+		}
 	case status.MonitoringState == model.MonitoringLearning:
 		retention = "in apprendimento; cancellazioni sospese"
 	case status.DeletionBlocked:
@@ -120,11 +129,19 @@ func buildEmailReport(snapshot localclient.Snapshot, filesystem policy.Filesyste
 		action = "verifica i client senza copie complete"
 	case !status.Enabled:
 		action = "verifica la configurazione della retention"
+	case !status.MailTested:
+		action = "verifica la consegna della prova mail prima dell'attivazione"
+	case status.ResumePending:
+		action = "ripresa prenotata: attendi il prossimo controllo valido; nessun altro comando richiesto"
+	case status.ActivationPending && !status.ManualPaused:
+		action = "attivazione automatica prenotata: attendi apprendimento e controllo valido"
 	case canResume:
 		action = "controllo regolare. Cancellazione sospesa: esegui onlybackup-admin retention resume per riattivarla"
 		if status.ActiveAnomalies > 0 || len(findings) > 0 {
 			action += "; avviso sul margine di spazio ancora attivo"
 		}
+	case status.ManualPaused:
+		action = "pausa amministrativa: per riprendere esegui onlybackup-admin retention resume --when-ready"
 	case status.DeletionBlocked && (status.MonitoringState == model.MonitoringRegular || status.MonitoringState == model.MonitoringPaused):
 		action = "attendi un controllo regolare prima di riattivare la cancellazione"
 	case status.MonitoringState != model.MonitoringRegular && status.MonitoringState != model.MonitoringLearning:
@@ -139,7 +156,7 @@ func buildEmailReport(snapshot localclient.Snapshot, filesystem policy.Filesyste
 // requires another check. This only changes the report, never permissions.
 func reportCanSuggestResume(snapshot localclient.Snapshot, findings []policy.Finding, now time.Time) bool {
 	status := snapshot.Status
-	if !status.LastCheckRegular || !status.Enabled || !status.MailTested || !status.DeletionBlocked || !onlyQuarantineMarginWarnings(snapshot, findings) ||
+	if status.ActivationPending || status.ResumePending || !status.LastCheckRegular || !status.Enabled || !status.MailTested || !status.DeletionBlocked || !onlyQuarantineMarginWarnings(snapshot, findings) ||
 		(status.MonitoringState != model.MonitoringRegular && status.MonitoringState != model.MonitoringPaused) ||
 		status.ModelRevision == 0 || status.LastCheckAt == 0 || status.LastCheckAt > now.Unix()+1 ||
 		now.Unix()-status.LastCheckAt > int64(10*time.Minute/time.Second) {

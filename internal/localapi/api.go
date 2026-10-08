@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/meiome/onlybackup/internal/ingest"
@@ -82,6 +81,19 @@ func requirePeer(r *http.Request) error {
 		return errors.New("identita Unix del chiamante non disponibile")
 	}
 	return nil
+}
+
+type adminConfirmation struct {
+	Confirmation string `json:"confirmation"`
+}
+
+// Enforce consent at the writer boundary, also for clients bypassing the CLI.
+func requireAdminConfirmation(w http.ResponseWriter, provided, expected string) bool {
+	if provided != expected {
+		writeError(w, http.StatusConflict, "conferma esplicita richiesta: "+expected)
+		return false
+	}
+	return true
 }
 
 func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) {
@@ -182,18 +194,35 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) {
 	case "/v1/automation/setup":
 		var request struct {
 			store.MailSettings
-			Timezone string `json:"timezone"`
+			adminConfirmation
+			Timezone      string `json:"timezone"`
+			RetentionMode string `json:"retention_mode"`
 		}
 		if err := decode(r, &request); err != nil {
 			writeError(w, 400, err.Error())
 			return
 		}
-		if err := a.Store.SetupAutomation(request.MailSettings, request.Timezone, now); err != nil {
+		if !requireAdminConfirmation(w, request.Confirmation, model.ConfirmAutomationSetup(request.RetentionMode)) {
+			return
+		}
+		if err := a.Store.SetupAutomationMode(request.MailSettings, request.Timezone, request.RetentionMode, now); err != nil {
 			writeError(w, 400, err.Error())
 			return
 		}
-		writeJSON(w, 200, map[string]string{"status": "configured"})
+		if request.RetentionMode == "" {
+			request.RetentionMode = "preserved"
+		}
+		writeJSON(w, 200, map[string]string{"status": "configured", "retention_mode": request.RetentionMode,
+			"message": "Modalità retention salvata. In modalità auto, attivazione dopo prova mail e controllo valido; le pause manuali restano attive."})
 	case "/v1/automation/enable":
+		var request adminConfirmation
+		if err := decode(r, &request); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		if !requireAdminConfirmation(w, request.Confirmation, model.ConfirmRetentionEnable) {
+			return
+		}
 		if err := a.Store.EnableAutomation(); err != nil {
 			writeError(w, 409, err.Error())
 			return
@@ -215,20 +244,49 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"status": "configured"})
 	case "/v1/retention/pause":
 		var request struct {
+			adminConfirmation
 			Reason string `json:"reason"`
 		}
-		_ = decode(r, &request)
+		if err := decode(r, &request); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		if !requireAdminConfirmation(w, request.Confirmation, model.ConfirmRetentionPause) {
+			return
+		}
 		if err := a.Store.PauseRetention(request.Reason); err != nil {
 			writeError(w, 500, err.Error())
 			return
 		}
 		writeJSON(w, 200, map[string]string{"status": "paused"})
 	case "/v1/retention/resume":
+		var request adminConfirmation
+		if err := decode(r, &request); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		if !requireAdminConfirmation(w, request.Confirmation, model.ConfirmRetentionResume) {
+			return
+		}
 		if err := a.Store.ResumeRetention(now); err != nil {
 			writeError(w, 409, err.Error())
 			return
 		}
 		writeJSON(w, 200, map[string]string{"status": "resumed"})
+	case "/v1/retention/resume-when-ready":
+		var request adminConfirmation
+		if err := decode(r, &request); err != nil {
+			writeError(w, 400, err.Error())
+			return
+		}
+		if !requireAdminConfirmation(w, request.Confirmation, model.ConfirmRetentionResumeWhenReady) {
+			return
+		}
+		if err := a.Store.RequestRetentionResume(now); err != nil {
+			writeError(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "resume_pending", "message": "Ripresa richiesta al prossimo controllo valido, dopo la prova mail. Una nuova pausa o anomalia bloccante annulla la richiesta."})
 	case "/v1/monitoring/relearn":
 		if err := a.Store.BeginRelearn(); err != nil {
 			writeError(w, 500, err.Error())
@@ -710,19 +768,17 @@ func (a *API) serveMaintenance(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 202, map[string]string{"status": "queued"})
 	case "/v1/mail/confirm":
 		var request struct {
-			ID    int64  `json:"id"`
-			Error string `json:"error"`
+			ID            int64  `json:"id"`
+			Error         string `json:"error"`
+			ConfigVersion int64  `json:"config_version"`
 		}
 		if err := decode(r, &request); err != nil {
 			writeError(w, 400, err.Error())
 			return
 		}
-		if err := a.Store.ConfirmMail(request.ID, request.Error, now); err != nil {
+		if err := a.Store.ConfirmMail(request.ID, request.Error, request.ConfigVersion, now); err != nil {
 			writeError(w, 400, err.Error())
 			return
-		}
-		if request.Error == "" && strings.HasPrefix(r.Header.Get("X-OnlyBackup-Mail-Kind"), "test") {
-			_ = a.Store.MarkMailTested(now)
 		}
 		writeJSON(w, 200, map[string]string{"status": "recorded"})
 	default:

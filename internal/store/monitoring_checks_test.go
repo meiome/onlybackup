@@ -414,7 +414,7 @@ func TestVersionSixMigrationAddsEmptyMonitoringHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(`DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; DROP TABLE monitoring_check_models; DROP TABLE monitoring_checks;
+	if _, err = db.Exec(`ALTER TABLE automation_state DROP COLUMN mail_config_version; ALTER TABLE automation_state DROP COLUMN activation_required; ALTER TABLE automation_state DROP COLUMN activation_pending; ALTER TABLE automation_state DROP COLUMN resume_pending; ALTER TABLE automation_state DROP COLUMN resume_requested_at; DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; DROP TABLE monitoring_check_models; DROP TABLE monitoring_checks;
 ALTER TABLE retention_operations DROP COLUMN execution_committed;
 ALTER TABLE retention_operations DROP COLUMN lease_generation;
 ALTER TABLE maintenance_leases DROP COLUMN generation;
@@ -430,7 +430,7 @@ PRAGMA user_version=6`); err != nil {
 	}
 	defer migrated.Close()
 	var version, checks, models int
-	if err = migrated.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
+	if err = migrated.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 12 {
 		t.Fatalf("versione migrata: %d %v", version, err)
 	}
 	if err = migrated.db.QueryRow(`SELECT COUNT(*) FROM monitoring_checks`).Scan(&checks); err != nil || checks != 0 {

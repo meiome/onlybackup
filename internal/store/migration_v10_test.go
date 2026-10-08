@@ -26,7 +26,7 @@ func TestV10PreservesExistingMinimumAndBlocks(t *testing.T) {
 			}
 			now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 			enableRetentionForTest(t, s, now)
-			if _, err = s.db.Exec(`UPDATE automation_state SET retention_days=45,deletion_blocked=?,block_reason='legacy reason'; DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; PRAGMA user_version=9`, blocked); err != nil {
+			if _, err = s.db.Exec(`UPDATE automation_state SET retention_days=45,deletion_blocked=?,block_reason='legacy reason'; ALTER TABLE automation_state DROP COLUMN mail_config_version; ALTER TABLE automation_state DROP COLUMN activation_required; ALTER TABLE automation_state DROP COLUMN activation_pending; ALTER TABLE automation_state DROP COLUMN resume_pending; ALTER TABLE automation_state DROP COLUMN resume_requested_at; DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; PRAGMA user_version=9`, blocked); err != nil {
 				t.Fatal(err)
 			}
 			s.Close()
@@ -47,7 +47,7 @@ func TestV10PreservesExistingMinimumAndBlocks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if s.schemaVersion != 10 || !status.Enabled || status.RetentionDaysForKey(key.ID) != 45 || status.ManualPaused != blocked || status.DeletionBlocked != blocked {
+			if s.schemaVersion != 12 || !status.Enabled || status.RetentionDaysForKey(key.ID) != 45 || status.ManualPaused != blocked || status.DeletionBlocked != blocked {
 				t.Fatalf("migration changed policy: %+v", status)
 			}
 			if err = s.SetCheckState(model.MonitoringRegular, 7, now); err != nil {

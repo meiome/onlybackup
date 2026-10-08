@@ -67,6 +67,12 @@ func TestReportResumeAdviceRequiresReadyCompletedCheck(t *testing.T) {
 		{name: "automation disabled", change: func(s *localclient.Snapshot, _ *[]policy.Finding) {
 			s.Status.Enabled = false
 		}},
+		{name: "initial activation pending", change: func(s *localclient.Snapshot, _ *[]policy.Finding) {
+			s.Status.ActivationPending = true
+		}},
+		{name: "deferred resume already requested", change: func(s *localclient.Snapshot, _ *[]policy.Finding) {
+			s.Status.ResumePending = true
+		}},
 		{name: "already resumed", change: func(s *localclient.Snapshot, _ *[]policy.Finding) {
 			s.Status.MonitoringState = model.MonitoringRegular
 			s.Status.DeletionBlocked = false
@@ -86,7 +92,7 @@ func TestReportResumeAdviceRequiresReadyCompletedCheck(t *testing.T) {
 				test.change(&snapshot, &findings)
 			}
 			report := buildEmailReport(snapshot, filesystem, findings, now)
-			if got := strings.Contains(report, "onlybackup-admin retention resume"); got != test.want {
+			if got := strings.Contains(report, "onlybackup-admin retention resume per riattivarla"); got != test.want {
 				t.Fatalf("resume advice=%v, want %v: %s", got, test.want, report)
 			}
 			if test.want && (!strings.Contains(report, "controllo regolare. Cancellazione sospesa:") ||
@@ -190,7 +196,7 @@ func TestPeriodicReportSuggestsResumeOnlyAfterLongRegularCheck(t *testing.T) {
 			if len(reports) != 1 || !strings.Contains(reports[0].Body, "Generato: 05/10/2026 09:45 UTC") {
 				t.Fatalf("periodic report missing or completion time wrong: %+v", reports)
 			}
-			if got := strings.Contains(reports[0].Body, "onlybackup-admin retention resume"); got == staleAnomaly {
+			if got := strings.Contains(reports[0].Body, "onlybackup-admin retention resume per riattivarla"); got == staleAnomaly {
 				t.Fatalf("resume advice=%v with stale anomaly=%v: %s", got, staleAnomaly, reports[0].Body)
 			}
 			// Check the advice against the writer's actual permission, only in this
@@ -242,7 +248,7 @@ func TestReportDoesNotSuggestResumeAfterCancellationFollowingCheck(t *testing.T)
 		return buildEmailReport(snapshot, filesystem, nil, f.now)
 	}
 	completeCheck()
-	if body := report(); !strings.Contains(body, "onlybackup-admin retention resume") {
+	if body := report(); !strings.Contains(body, "onlybackup-admin retention resume per riattivarla") {
 		t.Fatalf("regular manual pause did not suggest resume: %s", body)
 	}
 	// Inject cancellation precisely after check completion and before the
@@ -254,7 +260,7 @@ func TestReportDoesNotSuggestResumeAfterCancellationFollowingCheck(t *testing.T)
 	if err := f.db.ResumeRetention(f.now); err == nil {
 		t.Fatal("cancelled request should require another regular check")
 	}
-	if body := report(); strings.Contains(body, "onlybackup-admin retention resume") {
+	if body := report(); strings.Contains(body, "onlybackup-admin retention resume per riattivarla") {
 		t.Fatalf("report suggests resume rejected by the writer: %s", body)
 	}
 	stored, err := f.db.Backup(backupID)
@@ -263,7 +269,7 @@ func TestReportDoesNotSuggestResumeAfterCancellationFollowingCheck(t *testing.T)
 	}
 	f.now = f.now.Add(time.Minute)
 	completeCheck()
-	if body := report(); !strings.Contains(body, "onlybackup-admin retention resume") {
+	if body := report(); !strings.Contains(body, "onlybackup-admin retention resume per riattivarla") {
 		t.Fatalf("new regular check did not restore advice: %s", body)
 	}
 	if err := f.db.ResumeRetention(f.now); err != nil {

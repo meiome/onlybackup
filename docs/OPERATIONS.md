@@ -56,7 +56,10 @@ taking action. Do not manually delete state files while services are running.
 
 ## Capacity and retention
 
-OnlyBackup retention starts disabled on a new archive. An upgrade preserves
+OnlyBackup retention defaults to automatic on a new archive; deletion waits
+for successful mail proof, learning and a completed valid regular check.
+`automation setup --retention manual` opts out explicitly, and `retention pause`
+persists an administrative pause. An upgrade preserves
 existing enablement and blocks: it does not turn on deletion in a previously
 disabled archive, and it does not automatically turn off an enabled one. Inspect
 the actual state with:
@@ -78,10 +81,14 @@ See [RETENTION.md](RETENTION.md) for activation, manual selection, recovery,
 anomaly blocks, and the exact state machine. Manually deleting `.backup` files,
 quarantine files, or catalog rows remains unsupported and triggers an anomaly.
 
-`mail test` queues a message; wait for the persisted successful delivery shown
-by `automation status` before running `retention enable`. `automation setup`
-resets enablement, mail proof, and learning and rejects pending operations, so
-use it only for initial configuration or an intentional reset.
+`mail test` queues a message; the persisted successful delivery shown by
+`automation status` is required for activation. Automatic mode needs no later
+`retention enable` or `resume`. `automation setup` records the activation mode,
+resets mail proof and learning, cancels deferred resume and rejects pending
+operations, so use it only for initial configuration or an intentional reset.
+Omitting `--retention` preserves the existing choice; explicitly changing the
+mode requires its matching confirmation. Setup invalidates checks already in
+progress, so old results cannot replace the new configuration.
 
 A retention request receives a provisional ticket. The final validation commits
 permission for that single physical move or unlink; later revocation stops new
@@ -96,6 +103,21 @@ verified or repaired. See the retention guide before restarting a stuck cycle.
 explicit successful `retention resume`. Excluding an incident does not remove
 the administrative pause. Inspect `manual_paused` and `manual_pause_reason` in
 `automation status`.
+
+Use `retention resume --when-ready` to request a single release after the next
+valid check, including on an existing disabled archive. The request persists in
+`metadata.db`; it does not bypass mail proof, models, anomalies or uncertain
+operations. New pauses, blocking incidents, quarantine cancellations, missing
+file acknowledgements, setup and relearning cancel the request. A later pause
+always needs a new explicit resume. `activation_required`, `activation_pending`
+and `resume_pending` distinguish first activation from deferred release.
+
+Setup, enable, pause and resume ask for an action-specific confirmation. For
+scripts, use `--confirm` with the exact text listed in [RETENTION.md](RETENTION.md),
+for example `retention resume --when-ready --confirm PRENOTA`. The writer also
+checks the API `confirmation` field. Confirmation records the administrator's
+choice immediately; destructive work still waits for its safety prerequisites.
+Exclusions and maintenance recovery cannot release a pending deferred request.
 
 Set a key's minimum with `retention minimum --key KEY_ID --days 30`. Learning
 never recalculates this administrator-owned value. The status field

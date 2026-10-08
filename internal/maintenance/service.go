@@ -965,7 +965,7 @@ func (s *Service) deliverMail(ctx context.Context, settings model.MailSettings, 
 	}
 	for _, message := range messages {
 		err := s.Mail.Send(ctx, settings, message)
-		if confirmErr := s.call(ctx, "POST", "/v1/mail/confirm", map[string]any{"id": message.ID, "error": errorText(err)}, nil); confirmErr != nil {
+		if confirmErr := s.call(ctx, "POST", "/v1/mail/confirm", map[string]any{"id": message.ID, "error": errorText(err), "config_version": settings.ConfigVersion}, nil); confirmErr != nil {
 			return confirmErr
 		}
 		if err != nil {

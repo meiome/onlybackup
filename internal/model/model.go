@@ -253,20 +253,24 @@ const (
 )
 
 type AutomationStatus struct {
-	ManualPaused      bool           `json:"manual_paused"`
-	ManualPauseReason string         `json:"manual_pause_reason,omitempty"`
-	KeyRetentionDays  map[string]int `json:"key_retention_days"`
-	Enabled           bool           `json:"enabled"`
-	MailTested        bool           `json:"mail_tested"`
-	MonitoringState   string         `json:"monitoring_state"`
-	DeletionBlocked   bool           `json:"deletion_blocked"`
-	BlockReason       string         `json:"block_reason,omitempty"`
-	Timezone          string         `json:"timezone"`
-	RetentionDays     int            `json:"retention_days"`
-	ThresholdBasis    int            `json:"threshold_basis_points"`
-	ReserveFree       int64          `json:"reserve_free_bytes"`
-	ModelRevision     int64          `json:"model_revision"`
-	LastCheckAt       int64          `json:"last_check_at_unix,omitempty"`
+	ActivationPending  bool           `json:"activation_pending"`
+	ActivationRequired bool           `json:"activation_required"`
+	ResumePending      bool           `json:"resume_pending"`
+	ResumeRequestedAt  int64          `json:"resume_requested_at_unix,omitempty"`
+	ManualPaused       bool           `json:"manual_paused"`
+	ManualPauseReason  string         `json:"manual_pause_reason,omitempty"`
+	KeyRetentionDays   map[string]int `json:"key_retention_days"`
+	Enabled            bool           `json:"enabled"`
+	MailTested         bool           `json:"mail_tested"`
+	MonitoringState    string         `json:"monitoring_state"`
+	DeletionBlocked    bool           `json:"deletion_blocked"`
+	BlockReason        string         `json:"block_reason,omitempty"`
+	Timezone           string         `json:"timezone"`
+	RetentionDays      int            `json:"retention_days"`
+	ThresholdBasis     int            `json:"threshold_basis_points"`
+	ReserveFree        int64          `json:"reserve_free_bytes"`
+	ModelRevision      int64          `json:"model_revision"`
+	LastCheckAt        int64          `json:"last_check_at_unix,omitempty"`
 	// LastCheckRegular is false when a later event invalidated the regular check.
 	LastCheckRegular bool  `json:"last_check_regular"`
 	NextReportAt     int64 `json:"next_report_at_unix,omitempty"`
@@ -357,11 +361,12 @@ type MailMessage struct {
 }
 
 type MailSettings struct {
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	TLS        bool   `json:"tls"`
-	From       string `json:"from"`
-	Recipients string `json:"recipients"`
+	ConfigVersion int64  `json:"config_version"`
+	Host          string `json:"host"`
+	Port          int    `json:"port"`
+	TLS           bool   `json:"tls"`
+	From          string `json:"from"`
+	Recipients    string `json:"recipients"`
 }
 
 type Key struct {

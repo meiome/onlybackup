@@ -225,6 +225,13 @@ func (s *Store) CompleteMonitoringCheck(id int64, outcome, summary, state string
 	}
 	defer tx.Rollback()
 	var currentRevision int64
+	var running int
+	if err = tx.QueryRow(`SELECT COUNT(*) FROM monitoring_checks WHERE id=? AND status='running'`, id).Scan(&running); err != nil {
+		return err
+	}
+	if running != 1 {
+		return errors.New("controllo non piu in corso o invalidato dalla configurazione")
+	}
 	if err = tx.QueryRow(`SELECT model_revision FROM automation_state WHERE id=1`).Scan(&currentRevision); err != nil {
 		return err
 	}
@@ -265,10 +272,34 @@ func (s *Store) CompleteMonitoringCheck(id int64, outcome, summary, state string
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return errors.New("controllo non piu in corso")
 	}
+	if err = activateRetentionAfterCheckTx(tx); err != nil {
+		return err
+	}
 	if err = cleanupMonitoringChecksTx(tx, now.Add(-monitoringCheckRetention).Unix()); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// Run only in the transaction completing a real monitoring attempt, after its
+// findings and current revision have been committed. Failed, stale or replayed
+// completions cannot consume an activation or a deferred resume.
+func activateRetentionAfterCheckTx(tx *sql.Tx) error {
+	var ready bool
+	err := tx.QueryRow(`SELECT enabled AND mail_tested AND monitoring_state='REGOLARE' AND model_revision<>0
+ AND (resume_pending OR (activation_pending AND NOT manual_paused))
+ AND EXISTS (SELECT 1 FROM keys WHERE revoked=0)
+ AND NOT EXISTS (SELECT 1 FROM keys k WHERE k.revoked=0 AND NOT EXISTS (
+  SELECT 1 FROM monitoring_models m WHERE m.key_id=k.id AND m.revision=a.model_revision
+  AND m.reliable=1 AND m.review_required=0 AND m.timezone=a.timezone))
+ AND NOT EXISTS (SELECT 1 FROM retention_operations WHERE state='authorized')
+ FROM automation_state a WHERE id=1`).Scan(&ready)
+	if err != nil || !ready {
+		return err
+	}
+	_, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=0,block_reason='',manual_paused=0,manual_pause_reason='',
+ activation_pending=0,activation_required=0,resume_pending=0,resume_requested_at=0 WHERE id=1`)
+	return err
 }
 
 func (s *Store) FailMonitoringCheck(id int64, summary string, now time.Time) error {

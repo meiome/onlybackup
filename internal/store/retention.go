@@ -21,10 +21,12 @@ type MailSettings = model.MailSettings
 
 func (s *Store) AutomationStatus() (model.AutomationStatus, error) {
 	var v model.AutomationStatus
-	err := s.db.QueryRow(`SELECT enabled,mail_tested,monitoring_state,(deletion_blocked OR manual_paused),block_reason,manual_paused,manual_pause_reason,
+	err := s.db.QueryRow(`SELECT enabled,mail_tested,monitoring_state,(deletion_blocked OR manual_paused OR activation_required OR resume_pending OR NOT enabled OR NOT mail_tested),block_reason,manual_paused,manual_pause_reason,
+ activation_pending,activation_required,resume_pending,resume_requested_at,
  timezone,retention_days,threshold_basis_points,reserve_free,model_revision,last_check_at,next_report_at,
  (SELECT COUNT(*) FROM anomalies WHERE resolved_at=0) FROM automation_state WHERE id=1`).Scan(
 		&v.Enabled, &v.MailTested, &v.MonitoringState, &v.DeletionBlocked, &v.BlockReason, &v.ManualPaused, &v.ManualPauseReason,
+		&v.ActivationPending, &v.ActivationRequired, &v.ResumePending, &v.ResumeRequestedAt,
 		&v.Timezone, &v.RetentionDays, &v.ThresholdBasis, &v.ReserveFree, &v.ModelRevision, &v.LastCheckAt,
 		&v.NextReportAt, &v.ActiveAnomalies)
 	if err != nil {
@@ -99,12 +101,19 @@ func checkRetentionMinimumTx(tx *sql.Tx, backupID string, now time.Time) error {
 
 func (s *Store) MailSettings() (MailSettings, error) {
 	var v MailSettings
-	err := s.db.QueryRow(`SELECT smtp_host,smtp_port,smtp_tls,mail_from,mail_to FROM automation_state WHERE id=1`).Scan(
-		&v.Host, &v.Port, &v.TLS, &v.From, &v.Recipients)
+	err := s.db.QueryRow(`SELECT smtp_host,smtp_port,smtp_tls,mail_from,mail_to,mail_config_version FROM automation_state WHERE id=1`).Scan(
+		&v.Host, &v.Port, &v.TLS, &v.From, &v.Recipients, &v.ConfigVersion)
 	return v, err
 }
 
 func (s *Store) SetupAutomation(settings MailSettings, timezone string, now time.Time) error {
+	return s.SetupAutomationMode(settings, timezone, "", now)
+}
+
+func (s *Store) SetupAutomationMode(settings MailSettings, timezone, mode string, now time.Time) error {
+	if mode != "" && mode != "auto" && mode != "manual" {
+		return errors.New("modalità retention non valida: auto o manual")
+	}
 	if strings.TrimSpace(settings.Host) == "" || settings.Port < 1 || settings.Port > 65535 ||
 		strings.TrimSpace(settings.From) == "" || strings.TrimSpace(settings.Recipients) == "" {
 		return errors.New("configurazione mail incompleta")
@@ -133,10 +142,18 @@ func (s *Store) SetupAutomation(settings MailSettings, timezone string, now time
 	if active != 0 {
 		return errors.New("configurazione rifiutata: completare, riconciliare o annullare le operazioni pendenti")
 	}
+	// A reset invalidates all work planned with the previous configuration,
+	// including first-learning checks whose revision has not been assigned yet.
+	if _, err = tx.Exec(`UPDATE monitoring_checks SET status='failed',finished_at=?,summary='invalidato dalla configurazione amministrativa' WHERE status='running'`, now.Unix()); err != nil {
+		return err
+	}
 	_, err = tx.Exec(`UPDATE automation_state SET smtp_host=?,smtp_port=?,smtp_tls=?,mail_from=?,mail_to=?,
-	 timezone=?,enabled=0,mail_tested=0,monitoring_state='APPRENDIMENTO',deletion_blocked=1,
+	 timezone=?,enabled=CASE WHEN ?='' THEN enabled ELSE ? END,
+	 activation_pending=CASE WHEN ?='' THEN activation_pending ELSE ? END,
+	 activation_required=1,resume_pending=0,resume_requested_at=0,
+	 mail_config_version=mail_config_version+1,mail_tested=0,monitoring_state='APPRENDIMENTO',deletion_blocked=1,
 	 block_reason='prova mail e apprendimento richiesti',model_revision=0,next_report_at=? WHERE id=1`, settings.Host,
-		settings.Port, settings.TLS, settings.From, settings.Recipients, timezone, now.Add(72*time.Hour).Unix())
+		settings.Port, settings.TLS, settings.From, settings.Recipients, timezone, mode, mode == "auto", mode, mode == "auto", now.Add(72*time.Hour).Unix())
 	if err != nil {
 		return err
 	}
@@ -164,7 +181,18 @@ func (s *Store) PauseRetention(reason string) error {
 	if strings.TrimSpace(reason) == "" {
 		reason = "sospensione amministrativa"
 	}
-	_, err := s.db.Exec(`UPDATE automation_state SET manual_paused=1,manual_pause_reason=? WHERE id=1`, reason)
+	_, err := s.db.Exec(`UPDATE automation_state SET manual_paused=1,manual_pause_reason=?,
+ activation_pending=0,resume_pending=0,resume_requested_at=0 WHERE id=1`, reason)
+	return err
+}
+
+// This is a one-shot administrative authorization, including for the current
+// manual pause. A later pause, cancellation, relearn or new blocking incident
+// cancels it. Merely recording it never removes any hold.
+func (s *Store) RequestRetentionResume(now time.Time) error {
+	_, err := s.db.Exec(`UPDATE automation_state SET enabled=1,resume_pending=1,resume_requested_at=?,
+ block_reason=CASE WHEN deletion_blocked=0 THEN 'ripresa prenotata; controllo valido richiesto' ELSE block_reason END,
+ deletion_blocked=1 WHERE id=1`, now.Unix())
 	return err
 }
 
@@ -176,8 +204,9 @@ func (s *Store) ResumeRetention(now time.Time) error {
 	defer tx.Rollback()
 	var active int
 	var state string
+	var enabled, mailTested bool
 	var lastCheck, revision int64
-	if err = tx.QueryRow(`SELECT monitoring_state,last_check_at,model_revision FROM automation_state WHERE id=1`).Scan(&state, &lastCheck, &revision); err != nil {
+	if err = tx.QueryRow(`SELECT monitoring_state,last_check_at,model_revision,enabled,mail_tested FROM automation_state WHERE id=1`).Scan(&state, &lastCheck, &revision, &enabled, &mailTested); err != nil {
 		return err
 	}
 	if active, err = blockingAnomalyCountTx(tx, now); err != nil {
@@ -187,10 +216,11 @@ func (s *Store) ResumeRetention(now time.Time) error {
 	if err = tx.QueryRow(`SELECT COUNT(*) FROM retention_operations WHERE state='authorized'`).Scan(&uncertain); err != nil {
 		return err
 	}
-	if active != 0 || uncertain != 0 || revision == 0 || lastCheck == 0 || lastCheck > now.Unix()+1 || now.Unix()-lastCheck > int64(10*time.Minute/time.Second) || state != model.MonitoringRegular {
+	if !enabled || !mailTested || active != 0 || uncertain != 0 || revision == 0 || lastCheck == 0 || lastCheck > now.Unix()+1 || now.Unix()-lastCheck > int64(10*time.Minute/time.Second) || state != model.MonitoringRegular {
 		return errors.New("riattivazione rifiutata: controllo recente regolare, modello affidabile e nessuna operazione incerta richiesti")
 	}
-	if _, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=0,block_reason='',manual_paused=0,manual_pause_reason='' WHERE id=1`); err != nil {
+	if _, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=0,block_reason='',manual_paused=0,manual_pause_reason='',
+	 activation_pending=0,activation_required=0,resume_pending=0,resume_requested_at=0 WHERE id=1`); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -209,7 +239,8 @@ func (s *Store) BeginRelearn() error {
 	if active != 0 {
 		return errors.New("relearn rifiutato: completare, riconciliare o annullare le operazioni pendenti")
 	}
-	_, err = tx.Exec(`UPDATE automation_state SET monitoring_state='APPRENDIMENTO',deletion_blocked=1,block_reason='nuovo apprendimento richiesto',model_revision=model_revision+1 WHERE id=1`)
+	_, err = tx.Exec(`UPDATE automation_state SET monitoring_state='APPRENDIMENTO',deletion_blocked=1,block_reason='nuovo apprendimento richiesto',model_revision=model_revision+1,
+ resume_pending=0,resume_requested_at=0 WHERE id=1`)
 	if err != nil {
 		return err
 	}
@@ -238,7 +269,7 @@ func (s *Store) RequestQuarantine(backupID, origin, actor, reason string, now ti
 	var blocked bool
 	var blockReason, timezone string
 	var revision int64
-	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),CASE WHEN manual_paused THEN manual_pause_reason ELSE block_reason END,timezone,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &timezone, &revision); err != nil {
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused OR activation_required OR resume_pending OR NOT enabled OR NOT mail_tested),CASE WHEN manual_paused THEN manual_pause_reason ELSE block_reason END,timezone,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &timezone, &revision); err != nil {
 		return out, err
 	}
 	if blocked {
@@ -322,7 +353,7 @@ func (s *Store) RequestPurge(backupID, origin, actor, reason string, now time.Ti
 	var blocked bool
 	var blockReason, status, keyID string
 	var revision, notBefore int64
-	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),CASE WHEN manual_paused THEN manual_pause_reason ELSE block_reason END,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &revision); err != nil {
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused OR activation_required OR resume_pending OR NOT enabled OR NOT mail_tested),CASE WHEN manual_paused THEN manual_pause_reason ELSE block_reason END,model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &revision); err != nil {
 		return out, err
 	}
 	if blocked {
@@ -428,7 +459,7 @@ func (s *Store) AuthorizeOperation(operationID int64, lease model.MaintenanceLea
 	}
 	var blocked bool
 	var currentRevision int64
-	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &currentRevision); err != nil {
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused OR activation_required OR resume_pending OR NOT enabled OR NOT mail_tested),model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &currentRevision); err != nil {
 		return out, err
 	}
 	if err = scanOperation(tx.QueryRow(`SELECT id,backup_id,kind,state,origin,actor,reason,revision,requested_at,authorized_at,completed_at,error,lease_generation,execution_committed FROM retention_operations WHERE id=?`, operationID), &out); err != nil {
@@ -525,7 +556,7 @@ func (s *Store) ValidateOperation(operationID int64, ticket string, lease model.
 	}
 	var blocked bool
 	var revision int64
-	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &revision); err != nil {
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused OR activation_required OR resume_pending OR NOT enabled OR NOT mail_tested),model_revision FROM automation_state WHERE id=1`).Scan(&blocked, &revision); err != nil {
 		return err
 	}
 	if op.State != "authorized" || hash == "" || ticketHash(ticket) != hash || op.LeaseGeneration != lease.Generation {
@@ -764,7 +795,9 @@ func (s *Store) CancelQuarantineRequest(backupID, actor string, now time.Time) e
 		if n, _ := restored.RowsAffected(); n != 1 {
 			return errors.New("backup non ripristinato dopo l'annullamento")
 		}
-		_, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=1,monitoring_state='SOSPESO',block_reason='richiesta annullata; riattivazione amministrativa richiesta' WHERE id=1`)
+		_, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=1,monitoring_state='SOSPESO',block_reason='richiesta annullata; riattivazione amministrativa richiesta',
+ manual_paused=1,manual_pause_reason='richiesta annullata; riattivazione amministrativa richiesta',
+ activation_pending=0,resume_pending=0,resume_requested_at=0 WHERE id=1`)
 	}
 	if err != nil {
 		return err
@@ -875,7 +908,8 @@ func anomalyBlocksTx(tx *sql.Tx, stableKey, kind, keyID string, now time.Time) (
 }
 
 func blockForAnomalyTx(tx *sql.Tx, detail string) error {
-	_, err := tx.Exec(`UPDATE automation_state SET deletion_blocked=1,monitoring_state='ANOMALIA',block_reason=? WHERE id=1`, "anomalia: "+detail)
+	_, err := tx.Exec(`UPDATE automation_state SET deletion_blocked=1,monitoring_state='ANOMALIA',block_reason=?,
+ activation_pending=0,resume_pending=0,resume_requested_at=0 WHERE id=1`, "anomalia: "+detail)
 	return err
 }
 
@@ -1040,7 +1074,7 @@ func (s *Store) TryClearResolvedMaintenanceBlock(operationID int64, now time.Tim
 	var blocked bool
 	var blockReason, state string
 	var revision, lastCheck int64
-	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused),block_reason,monitoring_state,model_revision,last_check_at
+	if err = tx.QueryRow(`SELECT (deletion_blocked OR manual_paused OR activation_required OR resume_pending OR NOT enabled OR NOT mail_tested),block_reason,monitoring_state,model_revision,last_check_at
  FROM automation_state WHERE id=1`).Scan(&blocked, &blockReason, &state, &revision, &lastCheck); err != nil {
 		return false, err
 	}
@@ -1063,7 +1097,7 @@ func (s *Store) TryClearResolvedMaintenanceBlock(operationID int64, now time.Tim
 		return false, tx.Commit()
 	}
 	res, err := tx.Exec(`UPDATE automation_state SET deletion_blocked=0,block_reason=''
- WHERE id=1 AND manual_paused=0 AND deletion_blocked=1 AND block_reason=?`, "anomalia: "+detail)
+ WHERE id=1 AND manual_paused=0 AND resume_pending=0 AND deletion_blocked=1 AND block_reason=?`, "anomalia: "+detail)
 	if err != nil {
 		return false, err
 	}
@@ -1097,7 +1131,7 @@ func (s *Store) AcknowledgeMissingAnomaly(id int64, now time.Time) error {
 	if _, err = tx.Exec(`UPDATE anomalies SET acknowledged_at=?,resolved_at=? WHERE id=? AND resolved_at=0`, now.Unix(), now.Unix(), id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=1,monitoring_state='SOSPESO',block_reason='copia mancante riconosciuta; retention resume richiesto' WHERE id=1`); err != nil {
+	if _, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=1,monitoring_state='SOSPESO',block_reason='copia mancante riconosciuta; retention resume richiesto',activation_pending=0,resume_pending=0,resume_requested_at=0 WHERE id=1`); err != nil {
 		return err
 	}
 	mailID := fmt.Sprintf("acknowledged:%s:%d", stableKey, now.Unix())
@@ -1279,25 +1313,42 @@ func (s *Store) DueMail(now time.Time, limit int) ([]model.MailMessage, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) ConfirmMail(id int64, sendErr string, now time.Time) error {
-	var stableID string
-	if err := s.db.QueryRow(`SELECT stable_id FROM mail_queue WHERE id=?`, id).Scan(&stableID); err != nil {
+func (s *Store) ConfirmMail(id int64, sendErr string, configVersion int64, now time.Time) error {
+	tx, err := s.db.Begin()
+	if err != nil {
 		return err
+	}
+	defer tx.Rollback()
+	var stableID string
+	var attempts int
+	var sentAt int64
+	if err = tx.QueryRow(`SELECT stable_id,attempts,sent_at FROM mail_queue WHERE id=?`, id).Scan(&stableID, &attempts, &sentAt); err != nil {
+		return err
+	}
+	// A duplicate confirmation must never provide fresh proof after setup.
+	if sentAt != 0 {
+		return tx.Commit()
 	}
 	if sendErr == "" {
-		_, err := s.db.Exec(`UPDATE mail_queue SET sent_at=?,last_error='' WHERE id=? AND sent_at=0`, now.Unix(), id)
-		if err == nil && strings.HasPrefix(stableID, "mail-test:") {
-			err = s.MarkMailTested(now)
+		if _, err = tx.Exec(`UPDATE mail_queue SET sent_at=?,last_error='' WHERE id=? AND sent_at=0`, now.Unix(), id); err != nil {
+			return err
 		}
-		return err
+		// Record delivery even for an obsolete configuration, but certify only
+		// the version actually used by the sender, atomically with delivery.
+		if configVersion > 0 && strings.HasPrefix(stableID, "mail-test:") {
+			if _, err = tx.Exec(`UPDATE automation_state SET mail_tested=1,
+ next_report_at=CASE WHEN next_report_at=0 THEN ? ELSE next_report_at END
+ WHERE id=1 AND mail_config_version=?`, now.Add(72*time.Hour).Unix(), configVersion); err != nil {
+				return err
+			}
+		}
+	} else {
+		delay := time.Minute << min(attempts, 8)
+		if _, err = tx.Exec(`UPDATE mail_queue SET attempts=attempts+1,next_attempt_at=?,last_error=? WHERE id=? AND sent_at=0`, now.Add(delay).Unix(), sendErr, id); err != nil {
+			return err
+		}
 	}
-	var attempts int
-	if err := s.db.QueryRow(`SELECT attempts FROM mail_queue WHERE id=? AND sent_at=0`, id).Scan(&attempts); err != nil {
-		return err
-	}
-	delay := time.Minute << min(attempts, 8)
-	_, err := s.db.Exec(`UPDATE mail_queue SET attempts=attempts+1,next_attempt_at=?,last_error=? WHERE id=? AND sent_at=0`, now.Add(delay).Unix(), sendErr, id)
-	return err
+	return tx.Commit()
 }
 
 func (s *Store) SaveModel(keyID string, revision int64, timezone string, retentionDays int, value any, reliable, review bool, now time.Time) error {

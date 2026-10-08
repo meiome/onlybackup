@@ -467,7 +467,7 @@ PRAGMA user_version=1;
 			t.Fatal(err)
 		}
 		var version int
-		if err = migrated.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 10 {
+		if err = migrated.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 12 {
 			t.Fatalf("schema version after migration: %d %v", version, err)
 		}
 		backup, err = migrated.Backup("00112233445566778899aabbccddeeff")
@@ -526,7 +526,7 @@ func TestVersionThreeReadonlyCompatibilityAndRepeatableMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec("DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; DROP TABLE monitoring_check_models; DROP TABLE monitoring_checks; DROP TABLE upload_attempts; PRAGMA user_version=3"); err != nil {
+	if _, err = db.Exec("ALTER TABLE automation_state DROP COLUMN mail_config_version; ALTER TABLE automation_state DROP COLUMN activation_required; ALTER TABLE automation_state DROP COLUMN activation_pending; ALTER TABLE automation_state DROP COLUMN resume_pending; ALTER TABLE automation_state DROP COLUMN resume_requested_at; DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; DROP TABLE monitoring_check_models; DROP TABLE monitoring_checks; DROP TABLE upload_attempts; PRAGMA user_version=3"); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Close(); err != nil {
@@ -602,7 +602,7 @@ func TestVersionSevenMigrationAddsGenerationAndInvalidatesLegacyLease(t *testing
 		t.Fatal(err)
 	}
 	if _, err = db.Exec(`UPDATE maintenance_leases SET owner='legacy-worker',expires_at=4102444800 WHERE id=1;
-DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; ALTER TABLE retention_operations DROP COLUMN lease_generation;
+ALTER TABLE automation_state DROP COLUMN mail_config_version; ALTER TABLE automation_state DROP COLUMN activation_required; ALTER TABLE automation_state DROP COLUMN activation_pending; ALTER TABLE automation_state DROP COLUMN resume_pending; ALTER TABLE automation_state DROP COLUMN resume_requested_at; DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; ALTER TABLE retention_operations DROP COLUMN lease_generation;
 ALTER TABLE retention_operations DROP COLUMN execution_committed;
 ALTER TABLE maintenance_leases DROP COLUMN generation;
 PRAGMA user_version=7`); err != nil {
@@ -618,7 +618,7 @@ PRAGMA user_version=7`); err != nil {
 		t.Fatal(err)
 	}
 	var version int
-	if err = migrated.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
+	if err = migrated.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 12 {
 		t.Fatalf("versione migrata: %d %v", version, err)
 	}
 	var owner string

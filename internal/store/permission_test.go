@@ -122,7 +122,7 @@ func TestV8MigrationDoesNotMakeLegacyPermissionIrrevocable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(`DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; ALTER TABLE retention_operations DROP COLUMN execution_committed; PRAGMA user_version=8`); err != nil {
+	if _, err = db.Exec(`ALTER TABLE automation_state DROP COLUMN mail_config_version; ALTER TABLE automation_state DROP COLUMN activation_required; ALTER TABLE automation_state DROP COLUMN activation_pending; ALTER TABLE automation_state DROP COLUMN resume_pending; ALTER TABLE automation_state DROP COLUMN resume_requested_at; DROP TABLE key_retention; ALTER TABLE automation_state DROP COLUMN manual_paused; ALTER TABLE automation_state DROP COLUMN manual_pause_reason; ALTER TABLE retention_operations DROP COLUMN execution_committed; PRAGMA user_version=8`); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -140,7 +140,7 @@ func TestV8MigrationDoesNotMakeLegacyPermissionIrrevocable(t *testing.T) {
 	}
 	defer s.Close()
 	preserved, err := s.Operation(op.ID)
-	if err != nil || preserved.ExecutionCommitted || preserved.State != "authorized" || s.schemaVersion != 10 {
+	if err != nil || preserved.ExecutionCommitted || preserved.State != "authorized" || s.schemaVersion != 12 {
 		t.Fatalf("legacy permission changed: %+v %v", preserved, err)
 	}
 	if err = s.Revoke(key.ID); err != nil {

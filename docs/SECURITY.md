@@ -90,7 +90,7 @@ directory, monitor its capacity, and inspect residuals without weakening ACLs.
 
 ## Operational limits
 
-Opt-in retention uses an 80% physical-use trigger, a minimum cleanup target of
+Native automatic retention uses an 80% physical-use trigger, a minimum cleanup target of
 10% of filesystem capacity, administrator-configured per-key minima, current-day
 and last-copy exclusions, generation-bound per-operation tickets, and at least 48 hours of
 quarantine. Blocking anomalies stop new destructive authorizations. A
@@ -107,7 +107,16 @@ physical executors even if the protocol lease expires. After a crash a new
 cycle may wait for the old lease for up to ten minutes; a stuck process has no
 timed failover. Uncertain physical outcomes require verification or repair.
 Manual pause and its reason are persisted independently of automatic blocks.
-Only an explicit successful administrative resume clears the pause. Per-key
+Only an explicit successful administrative resume clears the pause. It can be
+requested with `--when-ready`, persisted until a valid monitoring completion
+and consumed once in the writer transaction. New blocking incidents or
+administrative pauses cancel the request. Automatic initial activation is
+separate from administrative pauses and requires successful mail proof and
+reliable models for all active keys. Upgrades and mode-omitting setup preserve
+existing choices. Administrative state changes require action-specific consent
+at the writer API boundary as well as in the CLI. Setup invalidates running
+checks, and deferred resume remains an independent destructive-work hold even
+when an anomaly exclusion clears its own block. Per-key
 retention minima are also rechecked at every new destructive authorization,
 including manual requests; learning cannot overwrite administrator settings.
 

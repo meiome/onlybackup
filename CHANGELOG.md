@@ -4,6 +4,31 @@ This file records release changes. It does not establish which binaries
 are installed on a server. Published versions and their artifacts are listed in
 [GitHub releases](https://github.com/meiome/onlybackup/releases).
 
+## Unreleased
+
+- Default new archives to automatic retention, held until successful mail proof,
+  reliable models and a completed regular check. Add
+  `automation setup --retention auto|manual` and report the selected mode during setup.
+- Add `retention resume --when-ready` for a persistent, one-shot release at the
+  next valid check. New administrative pauses, blocking incidents, cancellations,
+  missing-file acknowledgements, setup and relearning cancel deferred requests.
+- Require action-specific confirmation for setup, enable, pause and both resume
+  forms, through a CLI prompt or `--confirm`, enforced also by the writer API.
+  Mode-omitting setup preserves existing choices and invalidates running checks.
+  Pending resume remains a separate hold across anomaly exclusions and recovery.
+- Persist initial activation separately from administrative holds in schema v11.
+  Upgrades preserve existing enablement, holds and configured minima; they do not
+  silently activate previously disabled retention. Upgrade writer, maintenance
+  and administrator binaries together.
+- Version SMTP configuration in schema v12 and atomically bind successful mail
+  proof to the configuration actually used for delivery. An in-flight test from
+  before setup, a replayed confirmation, or the legacy mail-kind header cannot
+  certify replacement settings or activate retention. Existing proof and
+  retention choices are preserved by migration.
+- Preserve disk thresholds, oldest-first selection, per-key minima, last-copy
+  protection and at least 48 hours of quarantine. Show pending activation and
+  deferred resume in status and email reports.
+
 ## 0.4.1
 
 Existing upload and recovery clients remain compatible. Catalogs already on

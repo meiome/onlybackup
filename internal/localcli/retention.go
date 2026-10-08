@@ -63,10 +63,23 @@ func retentionAdmin(args []string, root, adminSocket string, out, errOut io.Writ
 			from := f.String("from", "", "mittente")
 			to := f.String("to", "", "destinatari separati da virgola")
 			zone := f.String("timezone", detectedTimezone(), "fuso civile IANA rilevato dal server")
+			mode := f.String("retention", "", "auto o manual; se omesso conserva la scelta, auto per nuovi archivi")
+			confirmation := f.String("confirm", "", "conferma esplicita (altrimenti richiesta da stdin)")
 			if err := parse(f, args[2:]); err != nil {
 				return true, err
 			}
-			request := map[string]any{"host": *host, "port": *port, "tls": *tls, "from": *from, "recipients": *to, "timezone": *zone}
+			if *mode != "" && *mode != "auto" && *mode != "manual" {
+				return true, errors.New("specificare --retention auto oppure manual")
+			}
+			expected := model.ConfirmAutomationSetup(*mode)
+			description := "Configurazione mail e nuovo apprendimento. Conserva la scelta retention esistente (automatica per un nuovo archivio); le pause manuali restano attive."
+			if *mode != "" {
+				description = "Configurazione mail e nuovo apprendimento. Modalità retention scelta: " + *mode + ". Le pause manuali restano attive."
+			}
+			if err := confirmRetentionChange(os.Stdin, out, *confirmation, expected, description); err != nil {
+				return true, err
+			}
+			request := map[string]any{"host": *host, "port": *port, "tls": *tls, "from": *from, "recipients": *to, "timezone": *zone, "retention_mode": *mode, "confirmation": expected}
 			var response any
 			if err := call("POST", "/v1/automation/setup", request, &response); err != nil {
 				return true, err
@@ -95,11 +108,16 @@ func retentionAdmin(args []string, root, adminSocket string, out, errOut io.Writ
 			}
 			return true, simulateRetention(call, root, out)
 		case "enable":
-			if len(args) != 2 {
-				return true, errors.New("retention enable non accetta argomenti")
+			f := flags("retention enable", errOut)
+			confirmation := f.String("confirm", "", "conferma esplicita ABILITA")
+			if err := parse(f, args[2:]); err != nil {
+				return true, err
+			}
+			if err := confirmRetentionChange(os.Stdin, out, *confirmation, model.ConfirmRetentionEnable, "Abilita la retention. I blocchi e i requisiti di sicurezza restano validi."); err != nil {
+				return true, err
 			}
 			var response any
-			if err := call("POST", "/v1/automation/enable", map[string]string{}, &response); err != nil {
+			if err := call("POST", "/v1/automation/enable", map[string]string{"confirmation": model.ConfirmRetentionEnable}, &response); err != nil {
 				return true, err
 			}
 			return true, Print(out, response)
@@ -121,20 +139,38 @@ func retentionAdmin(args []string, root, adminSocket string, out, errOut io.Writ
 		case "pause":
 			f := flags("retention pause", errOut)
 			reason := f.String("reason", "sospensione amministrativa", "motivazione")
+			confirmation := f.String("confirm", "", "conferma esplicita SOSPENDI")
 			if err := parse(f, args[2:]); err != nil {
 				return true, err
 			}
 			var response any
-			if err := call("POST", "/v1/retention/pause", map[string]string{"reason": *reason}, &response); err != nil {
+			if err := confirmRetentionChange(os.Stdin, out, *confirmation, model.ConfirmRetentionPause, "Sospendi nuove cancellazioni e annulla le attivazioni prenotate. La pausa resta attiva fino a una ripresa esplicita."); err != nil {
+				return true, err
+			}
+			if err := call("POST", "/v1/retention/pause", map[string]string{"reason": *reason, "confirmation": model.ConfirmRetentionPause}, &response); err != nil {
 				return true, err
 			}
 			return true, Print(out, response)
 		case "resume":
-			if len(args) != 2 {
-				return true, errors.New("retention resume non accetta argomenti")
+			f := flags("retention resume", errOut)
+			whenReady := f.Bool("when-ready", false, "sblocca una sola volta al prossimo controllo valido")
+			confirmation := f.String("confirm", "", "conferma esplicita RIPRENDI o PRENOTA con --when-ready")
+			if err := parse(f, args[2:]); err != nil {
+				return true, err
+			}
+			path := "/v1/retention/resume"
+			expected := model.ConfirmRetentionResume
+			description := "Rimuovi la pausa attuale se il controllo recente è valido. Le cancellazioni rispettano soglia e protezioni delle copie."
+			if *whenReady {
+				path = "/v1/retention/resume-when-ready"
+				expected = model.ConfirmRetentionResumeWhenReady
+				description = "Abilita la retention e prenota un solo sblocco della pausa attuale al prossimo controllo valido. Non servirà un'altra conferma alla conclusione del controllo."
+			}
+			if err := confirmRetentionChange(os.Stdin, out, *confirmation, expected, description); err != nil {
+				return true, err
 			}
 			var response any
-			if err := call("POST", "/v1/retention/resume", map[string]string{}, &response); err != nil {
+			if err := call("POST", path, map[string]string{"confirmation": expected}, &response); err != nil {
 				return true, err
 			}
 			return true, Print(out, response)
@@ -236,6 +272,21 @@ func retentionAdmin(args []string, root, adminSocket string, out, errOut io.Writ
 		return true, guidedQuarantine(call, out)
 	}
 	return true, flag.ErrHelp
+}
+
+func confirmRetentionChange(in io.Reader, out io.Writer, provided, expected, description string) error {
+	if provided == "" {
+		fmt.Fprintf(out, "%s\nDigitare %s per confermare: ", description, expected)
+		var err error
+		provided, err = readLine(bufio.NewReader(in))
+		if err != nil {
+			return errors.New("conferma non ricevuta; nessuna modifica")
+		}
+	}
+	if provided != expected {
+		return fmt.Errorf("conferma non corrispondente: richiesta %s; nessuna modifica", expected)
+	}
+	return nil
 }
 
 func printMonitoringChecks(call func(string, string, any, any) error, limit int, out io.Writer) error {

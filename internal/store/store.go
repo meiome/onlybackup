@@ -53,11 +53,16 @@ CREATE TABLE IF NOT EXISTS upload_attempts (
 );
 CREATE INDEX IF NOT EXISTS upload_attempts_key_time ON upload_attempts(key_id,attempted_at);
 CREATE TABLE IF NOT EXISTS automation_state (
- id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 0,
+ id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 1,
  mail_tested INTEGER NOT NULL DEFAULT 0, monitoring_state TEXT NOT NULL DEFAULT 'APPRENDIMENTO',
  deletion_blocked INTEGER NOT NULL DEFAULT 1, block_reason TEXT NOT NULL DEFAULT 'automazione non configurata',
  manual_paused INTEGER NOT NULL DEFAULT 0 CHECK(manual_paused IN (0,1)),
  manual_pause_reason TEXT NOT NULL DEFAULT '',
+ activation_pending INTEGER NOT NULL DEFAULT 1 CHECK(activation_pending IN (0,1)),
+ activation_required INTEGER NOT NULL DEFAULT 1 CHECK(activation_required IN (0,1)),
+ resume_pending INTEGER NOT NULL DEFAULT 0 CHECK(resume_pending IN (0,1)),
+ resume_requested_at INTEGER NOT NULL DEFAULT 0,
+ mail_config_version INTEGER NOT NULL DEFAULT 1 CHECK(mail_config_version>=1),
  timezone TEXT NOT NULL DEFAULT '', retention_days INTEGER NOT NULL DEFAULT 7 CHECK(retention_days>=7),
 	threshold_basis_points INTEGER NOT NULL DEFAULT 8000 CHECK(threshold_basis_points BETWEEN 1 AND 10000),
 	reserve_free INTEGER NOT NULL DEFAULT 0 CHECK(reserve_free>=0),
@@ -133,7 +138,7 @@ CREATE TABLE IF NOT EXISTS monitoring_check_models (
  FOREIGN KEY(key_id,revision) REFERENCES monitoring_models(key_id,revision), CHECK(covered_to>=covered_from)
 );
 CREATE INDEX IF NOT EXISTS monitoring_check_models_resume ON monitoring_check_models(key_id,revision,covered_to DESC);
-PRAGMA user_version=10;
+PRAGMA user_version=12;
 `
 
 func Open(path string, readonly bool) (*Store, error) {
@@ -284,7 +289,21 @@ func Open(path string, readonly bool) (*Store, error) {
 		}
 		version = 10
 	}
-	if version < 1 || version > 10 {
+	if version == 10 && !readonly {
+		if err = migrateV10ToV11(db); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrazione schema database: %w", err)
+		}
+		version = 11
+	}
+	if version == 11 && !readonly {
+		if err = migrateV11ToV12(db); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrazione schema database: %w", err)
+		}
+		version = 12
+	}
+	if version < 1 || version > 12 {
 		db.Close()
 		return nil, errors.New("schema database non supportato; eseguire init per un nuovo archivio")
 	}

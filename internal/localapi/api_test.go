@@ -57,6 +57,12 @@ func TestRoleSeparationVersionAndPeerEnforcement(t *testing.T) {
 	if response := request(api.MaintenanceHandler(), "POST", "/v1/automation/enable", map[string]string{}, true); response.Code != http.StatusNotFound {
 		t.Fatalf("maintenance reached admin command: %d", response.Code)
 	}
+	if response := request(api.MaintenanceHandler(), "POST", "/v1/retention/resume-when-ready", map[string]string{}, true); response.Code != http.StatusNotFound {
+		t.Fatalf("maintenance reached deferred resume: %d", response.Code)
+	}
+	if response := request(api.AdminHandler(), "POST", "/v1/retention/resume-when-ready", map[string]string{}, false); response.Code != http.StatusForbidden {
+		t.Fatalf("deferred resume without peer: %d", response.Code)
+	}
 	if response := request(api.AdminHandler(), "POST", "/v1/authorize", map[string]int{"id": 1}, true); response.Code != http.StatusNotFound {
 		t.Fatalf("admin reached maintenance command: %d", response.Code)
 	}
@@ -94,6 +100,7 @@ func TestSetupThroughAdminProtocolDoesNotEnableDeletion(t *testing.T) {
 	api, s := apiFixture(t)
 	response := request(api.AdminHandler(), "POST", "/v1/automation/setup", map[string]any{
 		"host": "smtp.test", "port": 25, "tls": true, "from": "backup@test", "recipients": "admin@test", "timezone": "Europe/Rome",
+		"confirmation": "CONFIGURA",
 	}, true)
 	if response.Code != http.StatusOK {
 		t.Fatalf("setup: %d %s", response.Code, response.Body.String())
@@ -102,7 +109,7 @@ func TestSetupThroughAdminProtocolDoesNotEnableDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Enabled || !status.DeletionBlocked || status.MailTested {
+	if !status.Enabled || !status.ActivationPending || !status.DeletionBlocked || status.MailTested {
 		t.Fatal(status)
 	}
 }

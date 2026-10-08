@@ -48,9 +48,6 @@ func TestAutomaticRetentionReclaimsSpaceWithQuarantineMarginWarning(t *testing.T
 	if err := db.MarkMailTested(now); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.EnableAutomation(); err != nil {
-		t.Fatal(err)
-	}
 	if err := db.SetReserveFree(1); err != nil {
 		t.Fatal(err)
 	}
@@ -65,15 +62,8 @@ func TestAutomaticRetentionReclaimsSpaceWithQuarantineMarginWarning(t *testing.T
 		t.Fatal(err)
 	}
 	status, err := db.AutomationStatus()
-	if err != nil || !status.LastCheckRegular || !status.DeletionBlocked || status.ActiveAnomalies != 1 {
-		t.Fatalf("initial activation or warning not preserved: %+v %v", status, err)
-	}
-	if err = db.ResumeRetention(now); err != nil {
-		t.Fatalf("margin warning prevented explicit resume: %v", err)
-	}
-	now = now.Add(time.Minute)
-	if err = service.RunOnce(ctx); err != nil {
-		t.Fatal(err)
+	if err != nil || !status.LastCheckRegular || status.DeletionBlocked || status.ActivationPending || status.ActiveAnomalies != 1 {
+		t.Fatalf("native activation or warning not preserved: %+v %v", status, err)
 	}
 	backups, err := db.Backups(key.ID, 100)
 	if err != nil {

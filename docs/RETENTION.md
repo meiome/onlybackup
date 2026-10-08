@@ -1,6 +1,8 @@
 # Monitoring and retention
 
-OnlyBackup retention is opt-in. The current catalog schema is v10. An upgrade
+New archives enable automatic retention by default, with deletion held until
+mail proof, learning and a valid regular check are complete. Administrators
+can opt out or pause it explicitly. The current catalog schema is v12. An upgrade
 that passes through v4 creates the cold copy `metadata.db.v4.cold-copy`; the
 v6-to-v7 migration adds the monitoring history without inventing earlier
 checks. The v7-to-v8 migration adds lease generations, invalidates the old
@@ -11,6 +13,17 @@ blocks and copies the existing archive minimum to each existing key. It does not
 recalculate or reduce that minimum. Since old blocks do not reliably identify
 their original cause, every existing block also becomes an administrative hold;
 after a regular check, use `retention resume` to release it explicitly.
+The v10-to-v11 migration preserves existing enablement, minima and every hold;
+it does not infer consent to automatic activation on existing archives. Use
+`retention resume --when-ready` to request activation or release an existing
+hold after the next valid check, without waiting for the ten-minute window.
+The v11-to-v12 migration versions the mail configuration without changing
+existing mail proof or retention choices. Each setup advances that version.
+Successful test delivery certifies only the version actually used for sending,
+checked atomically with the delivery confirmation. If setup changes while a test
+is in flight, its delivery is recorded but a test of the current configuration
+is still required. Update writer and maintenance together; confirmations without
+the configuration version cannot provide mail proof.
 Stop maintenance before upgrading and upgrade writer and
 maintenance together: older maintenance binaries do not take the execution lock.
 The migrations preserve existing enablement and blocks; upgrading does not
@@ -40,7 +53,7 @@ SQLite, reports, or logs.
 sudo onlybackup-admin --state /var/lib/onlybackup automation setup \
   --smtp-host smtp.example.net --smtp-port 587 --smtp-tls \
   --from onlybackup@example.net --to admin@example.net \
-  --timezone Europe/Rome
+  --timezone Europe/Rome --retention auto
 
 sudo install -d -o root -g onlybackup-maintenance -m 0750 \
   /etc/onlybackup-maintenance
@@ -58,26 +71,90 @@ sudo onlybackup-admin --state /var/lib/onlybackup mail test
 sudo onlybackup-admin --state /var/lib/onlybackup automation status
 ```
 
-`mail test` only queues a message. Wait for maintenance to send it and for
-`automation status` to show `mail_tested: true`, the persisted successful mail
-proof. Check the maintenance journal if it does not arrive. Then enable retention:
+New archives default to automatic retention. When `--retention` is omitted,
+setup preserves the existing enablement and pending initial consent, including
+a previous `manual` choice. Use `--retention auto` or `--retention manual` to
+explicitly change the mode. Manual mode leaves retention disabled until an
+explicit administrative activation. Administrative pauses survive either mode.
+
+Setup and the state commands require an action-specific confirmation. The CLI
+explains the action and asks for the exact text, also over SSH, Mosh or pipes.
+EOF, a wrong answer, or a mismatched `--confirm` value sends no mutation.
+For scripts, provide the same text through `--confirm`:
+
+| Command | Confirmation |
+| --- | --- |
+| `automation setup` with mode omitted | `CONFIGURA` |
+| `automation setup --retention auto` | `CONFIGURA AUTO` |
+| `automation setup --retention manual` | `CONFIGURA MANUAL` |
+| `retention enable` | `ABILITA` |
+| `retention pause` | `SOSPENDI` |
+| `retention resume` | `RIPRENDI` |
+| `retention resume --when-ready` | `PRENOTA` |
+
+For example, `retention resume --when-ready --confirm PRENOTA` records the
+request immediately; no further confirmation is needed when the valid check
+completes. Automatic safety blocks still apply without user confirmation.
+The writer's administrator API requires the same text in the JSON
+`confirmation` field, rejecting missing or mismatched consent before mutation.
+A generic `CONFIGURA` does not authorize a payload selecting a new mode.
+
+`mail test` only queues a message. Maintenance must successfully send it before
+`mail_tested` becomes true. Existing catalog history is used, but monitoring
+remains `APPRENDIMENTO` until 14 complete concordant days are available. With
+automatic mode selected, a subsequent completed regular check activates
+retention without further `enable` or `resume` commands. Cleanup still starts
+only at the disk threshold, and removes the oldest eligible copies first.
+Check the maintenance journal if the test mail does not arrive.
+
+Use `automation setup` for initial configuration or an intentional reset only:
+it resets mail proof and learning, records an explicitly chosen mode or preserves
+the existing choice, cancels deferred resume, and rejects pending retention
+operations. It atomically invalidates checks already in progress; their obsolete
+results cannot restore old revisions or activate retention. It never clears an
+administrative pause. A mode-omitting reset does not create a new automatic
+activation consent: if the previous consent was consumed or cancelled, use an
+explicitly confirmed `--retention auto` or a deferred resume when appropriate. To opt out after installation:
 
 ```bash
-sudo onlybackup-admin --state /var/lib/onlybackup retention enable
+sudo onlybackup-admin --state /var/lib/onlybackup retention pause --reason 'pausa amministrativa'
+```
+
+## Deferred activation and resume
+
+On an existing archive, or after a manual pause, request a single release:
+
+```bash
+sudo onlybackup-admin --state /var/lib/onlybackup retention resume --when-ready
 sudo onlybackup-admin --state /var/lib/onlybackup automation status
 ```
 
-Use `automation setup` for initial configuration or an intentional reset only:
-it clears enablement, mail proof, and learning, and rejects pending retention
-operations. The successful maintenance confirmation of the test mail is
-required before enablement. Existing catalog history is used, but monitoring
-remains `APPRENDIMENTO` until 14 complete concordant days are available. When
-it becomes regular, perform the explicit initial activation:
+This explicit request enables automation but holds deletion until a subsequent
+valid check completes, including a check already running when requested.
+Mail proof, reliable current models for every active key, no blocking anomaly,
+and no uncertain operation are required. A failed or obsolete check cannot
+release a hold. The writer consumes the request atomically with the successful
+check; it survives restarts and can wait through learning or an existing incident.
+A new blocking incident, a new manual pause, cancellation of a quarantine
+request, acknowledgement of a missing file, another setup, or relearning cancels
+the deferred request. A new blocking incident also cancels automatic first
+activation; after investigation, request a new deferred or immediate resume.
+Non-blocking warnings do not cancel it. Use `retention pause` to withdraw a
+pending request. Consumed consent never removes a later administrative pause.
 
-```bash
-sudo onlybackup-admin --state /var/lib/onlybackup retention resume
-```
+`metadata.db`, in `automation_state`, persists `enabled`, `activation_required`
+(initial safety hold), `activation_pending` (automatic initial activation),
+`manual_paused` and its reason, plus `resume_pending` and
+`resume_requested_at`. These fields are exposed by `automation status` (the
+request timestamp is named `resume_requested_at_unix` in JSON).
+The initial hold and a pending deferred request remain effective even if an
+anomaly exclusion clears its own automatic block. Reports distinguish initial waiting, deferred resume, and
+administrative pauses.
 
+The immediate `retention resume` command remains available, with its ten-minute
+freshness requirement. If installation used manual mode, either use
+`retention resume --when-ready` or, after successful mail proof, explicitly
+`retention enable` followed by immediate `retention resume` when ready.
 `resume` requires a recent regular check, reliable versioned models, no active
 blocking anomaly, and no uncertain operation. Non-blocking extra-copy warnings
 and the 48-hour free-space margin warning do not prevent it. A legitimate
@@ -252,7 +329,8 @@ An uncertain outcome remains blocked. A manual pause, cancellation, initial
 activation requirement, or another anomaly is never cleared by this recovery.
 Manual pause and its reason are stored independently of automatic blocks.
 Anomaly exclusions, resolutions, regular checks, restarts, and relearning never
-clear it. Only a successful administrative `retention resume` releases it.
+clear it. Only a successful administrative `retention resume`, immediate or
+explicitly requested with `--when-ready`, releases it.
 `automation status` exposes `manual_paused` and `manual_pause_reason`; effective
 `deletion_blocked` remains true while either kind of hold is active.
 This also covers errors reported after the physical change (for example, a

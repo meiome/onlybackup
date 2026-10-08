@@ -18,7 +18,7 @@ import (
 func TestReportBadgeOnlyGreenWithoutProblems(t *testing.T) {
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	snapshot := localclient.Snapshot{
-		Status:  model.AutomationStatus{Enabled: true, MonitoringState: model.MonitoringLearning, DeletionBlocked: true, Timezone: "Europe/Rome"},
+		Status:  model.AutomationStatus{Enabled: true, MailTested: true, MonitoringState: model.MonitoringLearning, DeletionBlocked: true, Timezone: "Europe/Rome"},
 		Keys:    []model.Key{{ID: "one", Name: "Linux"}},
 		Backups: []model.Backup{{Receipt: model.Receipt{Status: model.BackupComplete, ReceivedAt: now.Format(time.RFC3339), Size: 1 << 20}, KeyID: "one"}},
 	}

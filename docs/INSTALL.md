@@ -370,6 +370,23 @@ Complete verification by recovering from a cold copy of the entire
 original. See [RESTORE-TEST.md](RESTORE-TEST.md) for the automated MariaDB
 restore test.
 
+## 10. Configure retention
+
+New archives default to automatic retention. During initial SMTP configuration,
+choose `automation setup --retention auto` (the default) or explicitly opt out
+with `--retention manual`. Setup asks for `CONFIGURA AUTO` or `CONFIGURA MANUAL`;
+state commands also require their action-specific confirmation. When the mode is
+omitted on later setup runs, the existing choice is preserved. Follow
+[RETENTION.md](RETENTION.md) for confirmation texts, script flags, mail setup
+and the test delivery required before activation.
+
+Once mail proof, learning and a valid regular check are complete, automatic
+mode needs no later `retention enable` or `resume`. At 80% physical filesystem
+use it selects the oldest eligible copies, preserving configured minima, the
+current day, the last copy and at least 48 hours of quarantine. Use
+`retention pause` to suspend it manually; this pause survives checks and restarts.
+Settings and pending activation are stored in `metadata.db`.
+
 ## Clean reinstall of a disposable environment
 
 Use this procedure only when the existing state contains no backups, profiles,
@@ -444,8 +461,8 @@ writer lock does not replace an orderly shutdown and process check.
 
 ## SQLite schema and existing archives
 
-Current programs open v1 through v10 catalogs read-only. The first write access
-upgrades an older catalog transactionally to v10. Before the v4-to-v5
+Current programs open v1 through v12 catalogs read-only. The first write access
+upgrades an older catalog transactionally to v12. Before the v4-to-v5
 transaction it checkpoints SQLite and creates the reserved
 `metadata.db.v4.cold-copy`. Schema v5 adds retention states and audit, models,
 anomalies, persistent mail, and the maintenance lease. Schema v6 adds audited
@@ -478,11 +495,24 @@ archives also receive an administrative hold. After reviewing a regular check,
 release it with `retention resume`. Configure a key with
 `retention minimum --key KEY_ID --days 30`; learning never changes it.
 
+Schema v11 separates automatic initial activation from administrative pauses
+and persists one-shot deferred resume requests. The migration leaves existing
+enablement, blocks, minima and models unchanged; it creates no implicit consent.
+Use `retention resume --when-ready` to request release after the next valid check.
+New archives default to automatic activation after safety prerequisites;
+existing archives retain their previous behavior until an explicit request.
+
+Schema v12 adds a persistent mail configuration version. Setup advances it, and
+only a successful test sent using the current version can provide mail proof.
+An old in-flight delivery or duplicate confirmation cannot certify replacement
+settings. Migration preserves existing mail proof and retention choices; update
+writer and maintenance together to pass the configuration version on delivery.
+
 The v3-to-v4 migration imports the one attempt reconstructable from
 `backups.started_at`; older retries that were already overwritten cannot be
 reconstructed. Existing backup files are not changed or re-encrypted.
 
-Do not open a v10 catalog with older programs. There is no automatic downgrade;
+Do not open a v12 catalog with older programs. There is no automatic downgrade;
 rollback requires the complete verified copy made before the upgrade.
 
 ## Upgrade
@@ -504,12 +534,12 @@ migration from an older vault-based architecture.
 
 For a first retention configuration, follow [RETENTION.md](RETENTION.md) to
 configure mail, queue its test, wait for the persisted delivery confirmation,
-observe learning, simulate, and explicitly enable retention. On an archive
+observe learning, simulate, and choose automatic or manual activation. On an archive
 already configured for retention, inspect `automation status` after the upgrade:
 the migration preserves its enablement and blocks, and does not automatically
 disable existing automation. Do not run `automation setup` as a diagnostic
-command: it resets enablement, mail proof, and learning, and rejects pending
-retention operations.
+command: it records the activation mode, resets mail proof and learning,
+cancels deferred resume, and rejects pending retention operations.
 
 ## Completion criteria
 

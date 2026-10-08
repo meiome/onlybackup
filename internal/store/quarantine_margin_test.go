@@ -98,7 +98,7 @@ func TestExistingQuarantineMarginIncidentRequiresExplicitResume(t *testing.T) {
 		t.Fatalf("existing incident history rewritten: %+v %v", incidents, err)
 	}
 	var version int
-	if err = s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
+	if err = s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 12 {
 		t.Fatalf("schema changed: %d %v", version, err)
 	}
 }

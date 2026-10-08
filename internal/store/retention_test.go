@@ -982,7 +982,7 @@ func TestMailQueueDeduplicatesAndPersistsRetrySchedule(t *testing.T) {
 	if err != nil || len(messages) != 1 {
 		t.Fatalf("deduplicated queue: %v %v", messages, err)
 	}
-	if err = s.ConfirmMail(messages[0].ID, "SMTP unavailable", now); err != nil {
+	if err = s.ConfirmMail(messages[0].ID, "SMTP unavailable", 0, now); err != nil {
 		t.Fatal(err)
 	}
 	if messages, err = s.DueMail(now.Add(59*time.Second), 10); err != nil || len(messages) != 0 {
@@ -991,7 +991,7 @@ func TestMailQueueDeduplicatesAndPersistsRetrySchedule(t *testing.T) {
 	if messages, err = s.DueMail(now.Add(time.Minute), 10); err != nil || len(messages) != 1 || messages[0].Attempts != 1 {
 		t.Fatalf("persistent retry missing: %v %v", messages, err)
 	}
-	if err = s.ConfirmMail(messages[0].ID, "", now.Add(time.Minute)); err != nil {
+	if err = s.ConfirmMail(messages[0].ID, "", 0, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if messages, err = s.DueMail(now.Add(24*time.Hour), 10); err != nil || len(messages) != 0 {

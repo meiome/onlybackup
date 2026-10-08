@@ -125,13 +125,19 @@ readable content. OnlyBackup accepts files that have already been prepared; use
 - [Contributing](CONTRIBUTING.md)
 - [Release changes](CHANGELOG.md)
 
+New archives default to automatic retention after mail proof, learning and a
+valid check. At 80% physical disk use, cleanup selects the oldest eligible
+copies. `retention pause` persists a manual pause;
+`retention resume --when-ready` requests a single release after a valid check.
+Activation, pauses and deferred requests are stored in `metadata.db`.
+
 Retention grants durable permission for one physical operation at final
 validation. Revocation blocks new permissions but does not cancel committed
 work; quarantine and purge need separate permissions. Manual pause and its reason
 persist independently of automatic blocks and require an explicit successful
 administrative resume. Administrator-configured per-key retention minima are
 checked before each new destructive permission. These changes require schema
-v10 and matching binaries; verify the installed version before relying on them.
+v12 and matching binaries; verify the installed version before relying on them.
 See the retention guide for recovery after a crash and the remaining safety limits.
 
 Licensed under the [GNU AGPL-3.0](LICENSE).
