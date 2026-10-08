@@ -107,17 +107,24 @@ func buildEmailReport(snapshot localclient.Snapshot, filesystem policy.Filesyste
 	}
 
 	action := "nessuna oggi"
+	canResume := reportCanSuggestResume(snapshot, findings, now)
 	switch {
-	case status.ActiveAnomalies > 0 || len(findings) > 0:
+	case (status.ActiveAnomalies > 0 || len(findings) > 0) && !canResume:
 		action = "leggi gli avvisi di anomalia e verifica il client interessato"
+		if status.Enabled && !status.DeletionBlocked && status.MonitoringState == model.MonitoringRegular && onlyQuarantineMarginWarnings(snapshot, findings) {
+			action = "verifica lo spazio disponibile; la retention continua nel rispetto delle protezioni delle copie"
+		}
 	case activeKeys == 0:
 		action = "configura almeno un client di backup"
 	case keysWithoutCopy > 0:
 		action = "verifica i client senza copie complete"
 	case !status.Enabled:
 		action = "verifica la configurazione della retention"
-	case reportCanSuggestResume(snapshot, now):
+	case canResume:
 		action = "controllo regolare. Cancellazione sospesa: esegui onlybackup-admin retention resume per riattivarla"
+		if status.ActiveAnomalies > 0 || len(findings) > 0 {
+			action += "; avviso sul margine di spazio ancora attivo"
+		}
 	case status.DeletionBlocked && (status.MonitoringState == model.MonitoringRegular || status.MonitoringState == model.MonitoringPaused):
 		action = "attendi un controllo regolare prima di riattivare la cancellazione"
 	case status.MonitoringState != model.MonitoringRegular && status.MonitoringState != model.MonitoringLearning:
@@ -130,9 +137,9 @@ func buildEmailReport(snapshot localclient.Snapshot, filesystem policy.Filesyste
 // A suspended status also represents a regular check with a manual pause.
 // Use the writer's current check state to distinguish it from a pause that
 // requires another check. This only changes the report, never permissions.
-func reportCanSuggestResume(snapshot localclient.Snapshot, now time.Time) bool {
+func reportCanSuggestResume(snapshot localclient.Snapshot, findings []policy.Finding, now time.Time) bool {
 	status := snapshot.Status
-	if !status.LastCheckRegular || !status.Enabled || !status.MailTested || !status.DeletionBlocked || status.ActiveAnomalies != 0 ||
+	if !status.LastCheckRegular || !status.Enabled || !status.MailTested || !status.DeletionBlocked || !onlyQuarantineMarginWarnings(snapshot, findings) ||
 		(status.MonitoringState != model.MonitoringRegular && status.MonitoringState != model.MonitoringPaused) ||
 		status.ModelRevision == 0 || status.LastCheckAt == 0 || status.LastCheckAt > now.Unix()+1 ||
 		now.Unix()-status.LastCheckAt > int64(10*time.Minute/time.Second) {
@@ -140,6 +147,30 @@ func reportCanSuggestResume(snapshot localclient.Snapshot, now time.Time) bool {
 	}
 	for _, operation := range snapshot.Operations {
 		if operation.State == "authorized" {
+			return false
+		}
+	}
+	return true
+}
+
+// Missing anomaly details are not evidence that the active incidents are safe.
+// Only the specifically identified margin warning may coexist with this advice.
+func onlyQuarantineMarginWarnings(snapshot localclient.Snapshot, findings []policy.Finding) bool {
+	active := 0
+	for _, anomaly := range snapshot.Anomalies {
+		if anomaly.ResolvedAt != 0 {
+			continue
+		}
+		if !policy.IsQuarantineMarginWarning(anomaly.Kind, anomaly.StableKey) {
+			return false
+		}
+		active++
+	}
+	if active != snapshot.Status.ActiveAnomalies {
+		return false
+	}
+	for _, finding := range findings {
+		if !policy.IsQuarantineMarginWarning(finding.Kind, finding.StableKey) {
 			return false
 		}
 	}

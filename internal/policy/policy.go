@@ -13,12 +13,19 @@ import (
 )
 
 const (
-	ScheduleTolerance         = 30 * time.Minute
-	SizeTolerance             = 0.20
-	ForecastSafetyMargin      = 0.20
-	MinimumDays               = 7
-	MinimumReleaseBasisPoints = 1000
+	ScheduleTolerance          = 30 * time.Minute
+	SizeTolerance              = 0.20
+	ForecastSafetyMargin       = 0.20
+	MinimumDays                = 7
+	MinimumReleaseBasisPoints  = 1000
+	QuarantineMarginAnomalyKey = "capacity:quarantine-margin"
 )
+
+// IsQuarantineMarginWarning identifies the capacity warning that must not
+// prevent retention from reclaiming space. Other capacity incidents still block.
+func IsQuarantineMarginWarning(kind, stableKey string) bool {
+	return kind == "capacity" && stableKey == QuarantineMarginAnomalyKey
+}
 
 type Observation struct {
 	BackupID string    `json:"backup_id"`

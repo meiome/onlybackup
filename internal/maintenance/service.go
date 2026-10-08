@@ -266,7 +266,7 @@ func (s *Service) RunOnce(ctx context.Context) (runErr error) {
 		}
 		_, _, available, _ := filesystem.Bytes()
 		if expected48h > ^uint64(0)-reserve || available < expected48h+reserve {
-			findings = append(findings, policy.Finding{StableKey: "capacity:quarantine-margin", Kind: "capacity", Detail: "spazio disponibile insufficiente per 48 ore di depositi e riserva durante la quarantena"})
+			findings = append(findings, policy.Finding{StableKey: policy.QuarantineMarginAnomalyKey, Kind: "capacity", Detail: "spazio disponibile insufficiente per 48 ore di depositi e riserva durante la quarantena"})
 		}
 	}
 	state := model.MonitoringLearning

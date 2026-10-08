@@ -80,8 +80,8 @@ sudo onlybackup-admin --state /var/lib/onlybackup retention resume
 
 `resume` requires a recent regular check, reliable versioned models, no active
 blocking anomaly, and no uncertain operation. Non-blocking extra-copy warnings
-do not prevent it. A legitimate schedule change uses
-`monitoring relearn`; it does not silently widen tolerances.
+and the 48-hour free-space margin warning do not prevent it. A legitimate
+schedule change uses `monitoring relearn`; it does not silently widen tolerances.
 
 The 72-hour report and anomaly notices include a short HTML view and a plain
 text alternative. A large green `TUTTO OK` badge means that no anomaly or
@@ -227,6 +227,20 @@ checks; unresolved incidents get a daily reminder. Blocking anomalies suspend
 new quarantine and purge authorizations. Recovery and reconciliation of
 physical work already performed, and completion of final permissions already
 granted, remain possible while blocked.
+
+The specific `capacity:quarantine-margin` warning (not enough available space
+for the next 48 hours of deposits plus the reserve) remains visible and sends
+mail, but does not suspend quarantine or purge. Otherwise the warning would
+prevent retention from reclaiming the space it needs. Resolving this warning
+does not introduce a new pause. The configured per-key minima, current-day and
+last-copy protections, at least 48 hours of quarantine, and all other blocking
+conditions still apply. Other capacity incidents, including insufficient space
+for configured retention minima and per-key quota forecasts, remain blocking.
+
+This classification also applies to an existing margin incident without changing
+the schema or rewriting its history. A previously persisted retention block or
+administrative pause is preserved: after a fresh regular check, an explicit
+`retention resume` is still required.
 
 If a physical operation reports an error, its maintenance anomaly blocks
 destructive work. On a later cycle, reconciliation distinguishes a file still

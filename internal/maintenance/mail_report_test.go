@@ -37,6 +37,24 @@ func TestReportResumeAdviceRequiresReadyCompletedCheck(t *testing.T) {
 		{name: "active anomaly", change: func(s *localclient.Snapshot, _ *[]policy.Finding) {
 			s.Status.ActiveAnomalies = 1
 		}},
+		{name: "quarantine margin warning", want: true, change: func(s *localclient.Snapshot, findings *[]policy.Finding) {
+			s.Status.ActiveAnomalies = 1
+			s.Anomalies = []model.Anomaly{{Kind: "capacity", StableKey: policy.QuarantineMarginAnomalyKey}}
+			*findings = []policy.Finding{{Kind: "capacity", StableKey: policy.QuarantineMarginAnomalyKey}}
+		}},
+		{name: "margin warning with another capacity incident", change: func(s *localclient.Snapshot, _ *[]policy.Finding) {
+			s.Status.ActiveAnomalies = 2
+			s.Anomalies = []model.Anomaly{{Kind: "capacity", StableKey: policy.QuarantineMarginAnomalyKey}, {Kind: "capacity", StableKey: "capacity:retention-window"}}
+		}},
+		{name: "margin warning with new integrity finding", change: func(s *localclient.Snapshot, findings *[]policy.Finding) {
+			s.Status.ActiveAnomalies = 1
+			s.Anomalies = []model.Anomaly{{Kind: "capacity", StableKey: policy.QuarantineMarginAnomalyKey}}
+			*findings = []policy.Finding{{Kind: "catalog", StableKey: "catalog-file:one"}}
+		}},
+		{name: "margin key with wrong kind", change: func(s *localclient.Snapshot, _ *[]policy.Finding) {
+			s.Status.ActiveAnomalies = 1
+			s.Anomalies = []model.Anomaly{{Kind: "catalog", StableKey: policy.QuarantineMarginAnomalyKey}}
+		}},
 		{name: "new findings", change: func(_ *localclient.Snapshot, findings *[]policy.Finding) {
 			*findings = []policy.Finding{{Kind: "capacity"}}
 		}},
@@ -76,6 +94,25 @@ func TestReportResumeAdviceRequiresReadyCompletedCheck(t *testing.T) {
 				t.Fatalf("advice or report badge missing: %s", report)
 			}
 		})
+	}
+}
+
+func TestReportKeepsQuarantineMarginWarningVisibleWhileRetentionRuns(t *testing.T) {
+	now := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	snapshot := localclient.Snapshot{
+		Status: model.AutomationStatus{Enabled: true, MailTested: true, MonitoringState: model.MonitoringRegular,
+			LastCheckRegular: true, ActiveAnomalies: 1, Timezone: "UTC"},
+		Keys: []model.Key{{ID: "one", Name: "Windows"}},
+		Backups: []model.Backup{{KeyID: "one", Receipt: model.Receipt{Status: model.BackupComplete,
+			ReceivedAt: now.Format(time.RFC3339), Size: 100}}},
+		Anomalies: []model.Anomaly{{Kind: "capacity", StableKey: policy.QuarantineMarginAnomalyKey}},
+	}
+	filesystem := policy.Filesystem{Blocks: 1000, Bfree: 100, Bavail: 100, BlockSize: 1}
+	report := buildEmailReport(snapshot, filesystem, nil, now)
+	for _, want := range []string{"Esito: ATTENZIONE", "Anomalie attive: 1", "Retention: attiva", "la retention continua"} {
+		if !strings.Contains(report, want) {
+			t.Fatalf("warning or retention status missing %q: %s", want, report)
+		}
 	}
 }
 

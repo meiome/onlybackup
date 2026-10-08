@@ -112,9 +112,11 @@ total. Include all current and revoked credentials when estimating physical
 archive growth.
 
 Before capacity becomes critical, expand the filesystem or migrate the complete
-state during a maintenance window. The configured per-key minima are never automatically
-reduced to accommodate growth; an unsustainable capacity estimate blocks deletion and
-requires administrative action.
+state during a maintenance window. The configured per-key minima are never
+automatically reduced to accommodate growth; insufficient capacity for those
+minima blocks deletion and requires administrative action. The separate 48-hour
+free-space margin warning keeps sending alerts but allows retention to reclaim
+space, subject to all other holds and the normal quarantine protections.
 
 ## Credential rotation
 

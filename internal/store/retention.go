@@ -862,8 +862,8 @@ func recordExcludedAnomalyTx(tx *sql.Tx, stableKey, kind, keyID, backupID, detai
 	return err
 }
 
-func anomalyBlocksTx(tx *sql.Tx, kind, keyID string, now time.Time) (bool, error) {
-	if kind == "extra" {
+func anomalyBlocksTx(tx *sql.Tx, stableKey, kind, keyID string, now time.Time) (bool, error) {
+	if kind == "extra" || policy.IsQuarantineMarginWarning(kind, stableKey) {
 		return false, nil
 	}
 	if !excludableAnomalyKinds[kind] {
@@ -881,9 +881,10 @@ func blockForAnomalyTx(tx *sql.Tx, detail string) error {
 
 func blockingAnomalyCountTx(tx *sql.Tx, now time.Time) (int, error) {
 	var count int
-	err := tx.QueryRow(`SELECT COUNT(*) FROM anomalies a WHERE a.resolved_at=0 AND (
+	err := tx.QueryRow(`SELECT COUNT(*) FROM anomalies a WHERE a.resolved_at=0
+	 AND NOT (a.kind='capacity' AND a.stable_key=?) AND (
 	 a.kind NOT IN ('upload','time','schedule_missing','extra') OR
-		(a.kind<>'extra' AND (SELECT COUNT(*) FROM anomalies b WHERE b.resolved_at=0 AND b.kind=a.kind AND b.key_id=a.key_id AND b.event_at>=?)>=2))`, now.AddDate(0, 0, -14).Unix()).Scan(&count)
+		(a.kind<>'extra' AND (SELECT COUNT(*) FROM anomalies b WHERE b.resolved_at=0 AND b.kind=a.kind AND b.key_id=a.key_id AND b.event_at>=?)>=2))`, policy.QuarantineMarginAnomalyKey, now.AddDate(0, 0, -14).Unix()).Scan(&count)
 	return count, err
 }
 
@@ -928,7 +929,7 @@ func openAnomalyAtTx(tx *sql.Tx, stableKey, kind, keyID, backupID, detail string
 	if _, err = tx.Exec(`INSERT INTO anomalies(stable_key,kind,key_id,backup_id,detail,event_at,opened_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?)`, stableKey, kind, keyID, backupID, detail, eventAt.Unix(), now.Unix(), now.Unix()); err != nil {
 		return false, err
 	}
-	blocks, err := anomalyBlocksTx(tx, kind, keyID, now)
+	blocks, err := anomalyBlocksTx(tx, stableKey, kind, keyID, now)
 	if err != nil {
 		return false, err
 	}
@@ -938,7 +939,7 @@ func openAnomalyAtTx(tx *sql.Tx, stableKey, kind, keyID, backupID, detail string
 		}
 	}
 	mailID := fmt.Sprintf("anomaly:%s:%d", stableKey, now.Unix())
-	subject, body := anomalyMail(kind, detail)
+	subject, body := anomalyMail(stableKey, kind, detail)
 	if kind == "schedule_missing" {
 		subject, body, err = missingBackupMailTx(tx, keyID, eventAt)
 		if err != nil {
@@ -951,7 +952,10 @@ func openAnomalyAtTx(tx *sql.Tx, stableKey, kind, keyID, backupID, detail string
 	return true, nil
 }
 
-func anomalyMail(kind, detail string) (string, string) {
+func anomalyMail(stableKey, kind, detail string) (string, string) {
+	if policy.IsQuarantineMarginWarning(kind, stableKey) {
+		return "OnlyBackup: AVVISO NON BLOCCANTE - margine di spazio", detail + "\nLa retention può proseguire per liberare spazio; restano validi gli altri blocchi e le protezioni delle copie."
+	}
 	if kind == "extra" {
 		return "OnlyBackup: AVVISO NON BLOCCANTE - copie eccedenti", detail + "\nQuesta anomalia non sospende la retention; eventuali altri blocchi restano validi."
 	}
@@ -964,6 +968,12 @@ func (s *Store) ResolveAnomaly(stableKey string, now time.Time) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
+	var kind string
+	if err = tx.QueryRow(`SELECT kind FROM anomalies WHERE stable_key=? AND resolved_at=0`, stableKey).Scan(&kind); errors.Is(err, sql.ErrNoRows) {
+		return false, tx.Commit()
+	} else if err != nil {
+		return false, err
+	}
 	res, err := tx.Exec(`UPDATE anomalies SET resolved_at=? WHERE stable_key=? AND resolved_at=0`, now.Unix(), stableKey)
 	if err != nil {
 		return false, err
@@ -971,8 +981,12 @@ func (s *Store) ResolveAnomaly(stableKey string, now time.Time) (bool, error) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return false, tx.Commit()
 	}
-	if _, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=1,monitoring_state='SOSPESO',block_reason='anomalia risolta; retention resume richiesto' WHERE id=1`); err != nil {
-		return false, err
+	// Resolving a non-blocking space warning must not suspend the cleanup that
+	// cleared it. Existing administrative or anomaly holds remain untouched.
+	if !policy.IsQuarantineMarginWarning(kind, stableKey) {
+		if _, err = tx.Exec(`UPDATE automation_state SET deletion_blocked=1,monitoring_state='SOSPESO',block_reason='anomalia risolta; retention resume richiesto' WHERE id=1`); err != nil {
+			return false, err
+		}
 	}
 	mailID := fmt.Sprintf("resolved:%s:%d", stableKey, now.Unix())
 	if _, err = tx.Exec(`INSERT INTO mail_queue(stable_id,kind,subject,body,created_at,next_attempt_at) VALUES(?,'resolution','OnlyBackup: anomalia risolta',?,?,?)`, mailID, stableKey, now.Unix(), now.Unix()); err != nil {
