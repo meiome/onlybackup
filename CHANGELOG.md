@@ -4,6 +4,30 @@ This file records release changes. It does not establish which binaries
 are installed on a server. Published versions and their artifacts are listed in
 [GitHub releases](https://github.com/meiome/onlybackup/releases).
 
+## 0.4.1
+
+Existing upload and recovery clients remain compatible. Catalogs already on
+schema v10 need no schema migration; backup contents and learned models are
+preserved. The release includes Linux server and Windows client packages.
+
+- Keep the specific 48-hour free-space margin alert visible and mailed without
+  blocking quarantine or purge. Other capacity and integrity incidents retain
+  their existing blocking behavior.
+- Preserve per-key retention minima, current-day and last-copy protections, and
+  at least 48 hours of quarantine. Resolving the margin warning no longer
+  introduces a new retention pause.
+- Preserve existing administrative pauses and persisted blocks. After a fresh
+  regular check, explicitly run `retention resume` to release them, including
+  when the only remaining incident is the non-blocking margin warning.
+- Clarify margin-warning emails and periodic reports, identify the client and
+  appointment in missing-backup alerts, and base resume advice on a recently
+  completed regular check.
+- Add regression tests for automatic quarantine and purge under low-space
+  warnings, existing incident history, independent holds, and operator reports.
+
+Upgrade writer and maintenance together using [the installation guide](docs/INSTALL.md).
+Updating installed upload and recovery clients is not required.
+
 ## 0.4.0
 
 Existing upload and recovery clients remain compatible; updating installed clients
