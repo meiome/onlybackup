@@ -22,11 +22,14 @@ with tempfile.TemporaryDirectory(prefix="onlybackup-systemd-") as temporary:
     probe = fixture / "probe.test"
     subprocess.run([str(project / "scripts/go.sh"), "test", "-c", "-o", str(probe),
                     "./internal/maintenance"], cwd=project, check=True)
-    # Use the actual shipped access directives, including catalog exclusions.
+    # Use the actual shipped access directives, including catalog exclusions
+    # and capability removal. CI runs as root: without the latter it can open
+    # the mode-000 placeholders used by InaccessiblePaths, unlike our services.
     # PrivateUsers allows the unprivileged user manager to create mount namespaces;
     # BindReadOnlyPaths retains the fixture without making its parent writable.
     directives = ("ProtectSystem", "ProtectHome", "PrivateTmp", "PrivateDevices",
-                  "NoNewPrivileges", "ReadWritePaths", "InaccessiblePaths")
+                  "NoNewPrivileges", "CapabilityBoundingSet", "AmbientCapabilities",
+                  "ReadWritePaths", "InaccessiblePaths")
     for role in ("writer", "maintenance-split", "maintenance"):
         command = ["systemd-run"] + (["--user"] if os.geteuid() != 0 else [])
         command += ["--wait", "--pipe", "--collect",
