@@ -153,7 +153,7 @@ func TestWriterSIGTERMWaitsForAdmittedUpload(t *testing.T) {
 		t.Fatal("writer did not exit after admitted upload completed")
 	}
 
-	stored, err := os.ReadFile(filepath.Join(root, "backups", receipt.ID+".backup"))
+	stored, err := os.ReadFile(filepath.Join(root, "archives", "backups", receipt.ID+".backup"))
 	if err != nil {
 		t.Fatal(err)
 	}

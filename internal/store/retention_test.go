@@ -226,7 +226,7 @@ func TestAnomalyInvalidatesAuthorizedDestruction(t *testing.T) {
 }
 
 func TestResolvedMaintenanceFailureClearsOnlyItsOwnBlock(t *testing.T) {
-	setupFailure := func(t *testing.T) (*Store, model.RetentionOperation, time.Time) {
+	setupFailure := func(t *testing.T, commit bool) (*Store, model.RetentionOperation, time.Time) {
 		t.Helper()
 		s, _, token := setup(t, model.Profile{Name: "maintenance-recovery", TotalBytes: 1000, MaxBackupBytes: 500, UploadsPerDay: 20, Concurrent: 2})
 		now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
@@ -245,6 +245,11 @@ func TestResolvedMaintenanceFailureClearsOnlyItsOwnBlock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if commit {
+			if err = s.ValidateOperation(op.ID, authorized.Ticket, lease, now); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if err = s.ConfirmOperation(op.ID, authorized.Ticket, false, "errore temporaneo", lease, now); err != nil {
 			t.Fatal(err)
 		}
@@ -255,7 +260,13 @@ func TestResolvedMaintenanceFailureClearsOnlyItsOwnBlock(t *testing.T) {
 	}
 
 	t.Run("regular-check-clears", func(t *testing.T) {
-		s, op, now := setupFailure(t)
+		s, op, now := setupFailure(t, true)
+		if cleared, err := s.TryClearResolvedMaintenanceBlock(op.ID, now); err != nil || cleared {
+			t.Fatalf("errore non completato risolto: %v %v", cleared, err)
+		}
+		if err := s.ReconcileAuthorized(op.ID, now); err != nil {
+			t.Fatal(err)
+		}
 		if err := s.SetCheckState(model.MonitoringRegular, 7, now); err != nil {
 			t.Fatal(err)
 		}
@@ -270,7 +281,7 @@ func TestResolvedMaintenanceFailureClearsOnlyItsOwnBlock(t *testing.T) {
 	})
 
 	t.Run("manual-pause-is-preserved", func(t *testing.T) {
-		s, op, now := setupFailure(t)
+		s, op, now := setupFailure(t, false)
 		if err := s.PauseRetention("manutenzione amministrativa"); err != nil {
 			t.Fatal(err)
 		}
@@ -288,13 +299,17 @@ func TestResolvedMaintenanceFailureClearsOnlyItsOwnBlock(t *testing.T) {
 	})
 
 	t.Run("cancellation-is-preserved", func(t *testing.T) {
-		s, op, now := setupFailure(t)
+		s, op, now := setupFailure(t, false)
 		stored, err := s.Operation(op.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err = s.CancelQuarantineRequest(stored.BackupID, "admin", now); err != nil {
 			t.Fatal(err)
+		}
+		active, err := s.Anomalies(true)
+		if err != nil || len(active) != 0 {
+			t.Fatalf("cancelled operation left stale error: %+v %v", active, err)
 		}
 		if err = s.SetCheckState(model.MonitoringRegular, 7, now); err != nil {
 			t.Fatal(err)

@@ -19,15 +19,16 @@ maintenance <---------------- maintenance socket -----'
 
 > **Status:** the deposit path is running in production. Retention changes in
 > this repository must be checked against the installed version; local tests do
-> not establish that they have been released or deployed. Go, race, smoke,
-> system, and isolation tests passed for the documented retention worktree.
+> not establish that they have been released or deployed. The archive layout and
+> maintenance changes below require matching updated binaries and systemd units;
+> the repository implements them, but does not update an installed server.
 > Linux CI on pushes to `main` and pull requests runs `make check`, `make race`,
-> `make smoke`, and `make system-test`. The release workflow runs `make check`
+> `make smoke`, `make system-test`, and the systemd mount regression test. The release workflow runs `make check`
 > and `make race`; isolation and database restore checks require separate runs.
 
 ## Build and test from source
 
-Building requires Linux, Go 1.27 or later, and GCC.
+Building requires Linux, Go 1.27.2 or later, and GCC.
 
 ```bash
 make build
@@ -91,6 +92,23 @@ For a new server, upgrade, or migration, follow the single
 automation. Use the [operations runbook](docs/OPERATIONS.md) for recurring work
 and the [retention guide](docs/RETENTION.md) for monitoring, mail, simulation,
 quarantine, recovery, and persistent anomaly blocks.
+
+The required filesystem layout is `STATE/archives/{backups,quarantine}`.
+The `archives` parent is owned by writer, grouped to maintenance, mode `0710`;
+its children are `0770` (`0700` for parent and children in single-user use).
+Maintenance gets `ReadWritePaths=STATE/archives STATE/maintenance`; writer
+keeps the whole `STATE` writable without separate mounts for its children.
+The catalog, SQLite sidecars and `incoming` remain inaccessible to maintenance.
+An old layout must be migrated offline with all three services stopped:
+
+```bash
+sudo -u onlybackup-writer onlybackup-admin --state /var/lib/onlybackup migrate-archives
+```
+
+This resumable command renames directories without copying files or changing
+their inodes, owners, modes, catalog or operation records. Writer refuses the
+old layout with migration instructions; it never migrates automatically.
+Follow the [coordinated upgrade and rollback procedure](docs/INSTALL.md#upgrade).
 
 A client configuration looks like this:
 

@@ -235,6 +235,14 @@ type Backup struct {
 	PurgedAt       int64  `json:"purged_at_unix,omitempty"`
 }
 
+const BackupPageSize = 1000
+
+type BackupPage struct {
+	Backups []Backup `json:"backups"`
+	Next    string   `json:"next_backup_id,omitempty"`
+	Through int64    `json:"backups_through,omitempty"`
+}
+
 const (
 	BackupReceiving   = "receiving"
 	BackupComplete    = "complete"

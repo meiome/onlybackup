@@ -174,11 +174,12 @@ sudo -u onlybackup-writer \
   --state /var/lib/onlybackup init
 
 sudo chown onlybackup-writer:onlybackup-maintenance \
-  /var/lib/onlybackup /var/lib/onlybackup/backups \
-  /var/lib/onlybackup/quarantine /var/lib/onlybackup/maintenance
-sudo chmod 0710 /var/lib/onlybackup
-sudo chmod 0770 /var/lib/onlybackup/backups \
-  /var/lib/onlybackup/quarantine /var/lib/onlybackup/maintenance
+  /var/lib/onlybackup /var/lib/onlybackup/archives \
+  /var/lib/onlybackup/archives/backups \
+  /var/lib/onlybackup/archives/quarantine /var/lib/onlybackup/maintenance
+sudo chmod 0710 /var/lib/onlybackup /var/lib/onlybackup/archives
+sudo chmod 0770 /var/lib/onlybackup/archives/backups \
+  /var/lib/onlybackup/archives/quarantine /var/lib/onlybackup/maintenance
 ```
 
 Check ownership and permissions:
@@ -187,16 +188,28 @@ Check ownership and permissions:
 sudo stat -c '%A %a %U:%G %n' \
   /var/lib/onlybackup \
   /var/lib/onlybackup/incoming \
-  /var/lib/onlybackup/backups \
-  /var/lib/onlybackup/quarantine \
+  /var/lib/onlybackup/archives \
+  /var/lib/onlybackup/archives/backups \
+  /var/lib/onlybackup/archives/quarantine \
   /var/lib/onlybackup/maintenance \
   /var/lib/onlybackup/metadata.db
 ```
 
-The state root is `0710`; `incoming` is writer-only `0700`; `backups`,
-`quarantine`, and `maintenance` are `0770` for the dedicated maintenance group;
+The state root and `archives` parent are writer-owned, maintenance-group
+`0710`; `incoming` is writer-only `0700`; `archives/backups`,
+`archives/quarantine`, and `maintenance` are `0770` for the dedicated maintenance group;
 the database and sidecars remain writer-only. Completed backup files are
 `0440` for writer and maintenance. Never grant this group to the receiver.
+In single-user use, `archives` and both archive children are `0700`.
+
+The matching maintenance unit must use
+`ReadWritePaths=/var/lib/onlybackup/archives /var/lib/onlybackup/maintenance`.
+The catalog, all SQLite sidecars and `incoming` must remain inaccessible to
+maintenance. The writer unit keeps
+`ReadWritePaths=/var/lib/onlybackup /run/onlybackup`; do not add separate writable
+mounts for archive children. The shared parent allows directory renames without
+turning either child into a mount point. Verify the installed units against this
+contract; older packaged units still naming the old children are incompatible.
 
 ## 6. Install the TLS certificate
 
@@ -359,10 +372,10 @@ sudo -u onlybackup-writer \
   backups status --id RECEIPT_ID
 
 sudo stat -c '%A %a %U:%G %s %n' \
-  /var/lib/onlybackup/backups/RECEIPT_ID.backup
+  /var/lib/onlybackup/archives/backups/RECEIPT_ID.backup
 
 sudo sha256sum \
-  /var/lib/onlybackup/backups/RECEIPT_ID.backup
+  /var/lib/onlybackup/archives/backups/RECEIPT_ID.backup
 ```
 
 Complete verification by recovering from a cold copy of the entire
@@ -415,23 +428,31 @@ cannot be recovered or imported into the new catalog.
 
 ## Migrate from a vault-based installation
 
-Removing `onlybackup-vault` does not change the backup format or state path.
+Removing `onlybackup-vault` preserves the backup format and state root;
+archive directories must move to `archives` using the offline migration.
 Schedule a maintenance window and:
 
-1. Stop the receiver, writer, and old vault and confirm that no process still
-   has the state open.
+1. Stop the receiver, maintenance (if installed), writer, and old vault; confirm
+   that no process still has the state open.
 2. Create and verify a cold copy of the complete state, including
    `metadata.db-wal` and `metadata.db-shm` when present.
 3. Install all seven current programs and three current systemd units together.
-4. Create the admin and maintenance groups/accounts, initialize the fixed
-   `quarantine` and `maintenance` directories, and apply the ownership/modes
-   from section 5. Before changing existing files, reject links and unexpected
-   file types, then change only the ID-derived backup files:
+4. Create the admin and maintenance groups/accounts. First follow the offline
+   archive migration in the Upgrade section: the historical source directories
+   are `/var/lib/onlybackup/backups` and `/var/lib/onlybackup/quarantine`.
+   The offline command creates missing quarantine/maintenance directories for
+   pre-maintenance installations, without altering existing directories.
+   Do not pre-create destination children over an existing archive. After the
+   rename, apply the directory ownership/modes from section 5 and create
+   `maintenance` if missing. The following file permission conversion is
+   specific to the old vault architecture, not part of `migrate-archives`.
+   Before changing existing files, reject links and unexpected file types,
+   then change only the ID-derived backup files:
 
    ```bash
-   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+   sudo find /var/lib/onlybackup/archives/backups /var/lib/onlybackup/archives/quarantine \
      -xdev -mindepth 1 \( -type l -o -type d -o \! -type f \) -print
-   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+   sudo find /var/lib/onlybackup/archives/backups /var/lib/onlybackup/archives/quarantine \
      -xdev -type f \! -name '*.backup' -print
    ```
 
@@ -439,12 +460,12 @@ Schedule a maintenance window and:
    stopped, apply and verify the migration:
 
    ```bash
-   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+   sudo find /var/lib/onlybackup/archives/backups /var/lib/onlybackup/archives/quarantine \
      -xdev -type f -name '*.backup' \
      -exec chown onlybackup-writer:onlybackup-maintenance -- {} +
-   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+   sudo find /var/lib/onlybackup/archives/backups /var/lib/onlybackup/archives/quarantine \
      -xdev -type f -name '*.backup' -exec chmod 0440 -- {} +
-   sudo find /var/lib/onlybackup/backups /var/lib/onlybackup/quarantine \
+   sudo find /var/lib/onlybackup/archives/backups /var/lib/onlybackup/archives/quarantine \
      -xdev -type f -name '*.backup' \
      \( \! -user onlybackup-writer -o \! -group onlybackup-maintenance -o \! -perm 0440 \) -print
    ```
@@ -512,25 +533,82 @@ The v3-to-v4 migration imports the one attempt reconstructable from
 `backups.started_at`; older retries that were already overwritten cannot be
 reconstructed. Existing backup files are not changed or re-encrypted.
 
-Do not open a v12 catalog with older programs. There is no automatic downgrade;
-rollback requires the complete verified copy made before the upgrade.
+Do not open a v12 catalog with incompatible older programs. There is no
+automatic schema downgrade. A full state restore requires the complete verified
+pre-upgrade copy and is not an acceptable database rollback after new data has
+arrived. See the separate layout rollback procedure below.
 
 ## Upgrade
 
 Before upgrading, verify the new release as described in step 1 and create a
 complete cold copy of the state. Then:
 
-1. Stop the receiver, maintenance, and writer; confirm that no old maintenance
-   process still runs. Old maintenance binaries do not hold the execution lock.
-2. Install all seven programs and three systemd units from the new release;
-   create the maintenance/admin groups and apply the directory ownership above.
-3. Run `systemd-analyze verify` and `systemctl daemon-reload`.
-4. Start the writer, receiver, and maintenance service.
-5. Check the units, port, journal, a new upload, and recovery.
+1. Stop receiver, maintenance and writer, and verify that all processes and
+   administrative commands using state have exited. Keep them stopped through
+   migration, permissions verification and any rollback.
+2. Inventory the complete state before modifying it: directory locations,
+   device/inode numbers, ownership, modes, ACLs, file counts, sizes and SHA-256
+   manifest; include `incoming`, catalog, sidecars, maintenance state and
+   operation records. Record installed binary versions and unit contents.
+   Keep a verified independent cold copy; it is a backup, not the migration.
+3. Install all seven matching new programs and three matching units together.
+   They must implement the archive layout and long verification contract in
+   [RETENTION.md](RETENTION.md). Create the required accounts/groups, but do
+   not create destination archive children or run `init` on existing state.
+4. With receiver, maintenance and writer all stopped, run the new offline command:
 
-Do not run `init` again, delete the state, or open an upgraded catalog with
-older programs. Use the dedicated sections above for a clean reinstall or
-migration from an older vault-based architecture.
+   ```bash
+   sudo -u onlybackup-writer onlybackup-admin --state /var/lib/onlybackup migrate-archives
+   ```
+
+   Historical source paths are `STATE/backups` and `STATE/quarantine`;
+   destinations are `STATE/archives/backups` and `STATE/archives/quarantine`.
+   Migration uses directory rename on the same filesystem, without file copies.
+   It is resumable after interruption: inspect both source and destination
+   locations and rerun the command while services remain stopped. Do not merge,
+   overwrite or delete conflicting directories to force completion. It preserves
+   file inodes, owners and modes, and does not rewrite the catalog or operation
+   records. Cross-filesystem layouts must not be handled by a copying fallback.
+   Writer startup on the old layout fails with an instruction to migrate;
+   there is no automatic migration.
+5. Apply and verify section 5 directory ownership/modes: `archives` must be
+   writer-owned, maintenance-group `0710`, both children `0770` (`0700` for
+   parent and children in single-user use). Do not recursively chmod/chown
+   existing files as part of this layout migration. Compare the inventory using
+   the new path prefix: file identity, metadata and catalog/operations must be
+   preserved. Verify maintenance has writable `archives` and `maintenance`
+   only, with catalog, sidecars and incoming inaccessible; writer has writable
+   whole state and no separate child mounts.
+6. Run `systemd-analyze verify` and `systemctl daemon-reload`, then start writer,
+   receiver and maintenance. Check the installed units, journal, a new upload,
+   catalog inspection, automation status and recovery. Record actual results.
+
+Do not run `init` again or delete the state. An archive layout migration and a
+SQLite schema upgrade are separate operations; starting new binaries may upgrade
+the schema. Do not open an upgraded catalog with incompatible older programs.
+
+### Rollback with all services stopped
+
+Stop receiver, maintenance and writer again and verify no state users remain.
+Inspect the inventory and any partial migration first. Rename each migrated
+child back to its historical path, only when the old destination is absent:
+
+```bash
+sudo -u onlybackup-writer mv -T -- /var/lib/onlybackup/archives/backups /var/lib/onlybackup/backups
+sudo -u onlybackup-writer mv -T -- /var/lib/onlybackup/archives/quarantine /var/lib/onlybackup/quarantine
+sudo -u onlybackup-writer rmdir -- /var/lib/onlybackup/archives
+```
+
+These rollback renames require the verified same filesystem; do not use `mv`
+across filesystems, where it may copy. If only one child migrated, rename only
+that child. Remove only the empty `archives` parent with `rmdir`; never remove
+state recursively. Verify inodes, ownership and modes against the inventory.
+Restore a coherent set of binaries and units supporting both the restored
+layout and the current catalog schema, reload systemd and verify before restart.
+If new data has arrived, **do not roll back the database** from the pre-upgrade
+copy: it would lose deposits and operation history. Even without new data, any
+full cold-copy restore must restore a coherent complete state, never just SQLite.
+Use the vault migration section for its additional file permission conversion.
 
 For a first retention configuration, follow [RETENTION.md](RETENTION.md) to
 configure mail, queue its test, wait for the persisted delivery confirmation,
@@ -556,3 +634,13 @@ The installation is ready when:
 
 Continue with the monitoring, certificate renewal, credential rotation,
 capacity, cold-copy, and recovery schedule in [OPERATIONS.md](OPERATIONS.md).
+
+### Test the packaged mount rules
+
+From a checkout of the matching source, run `make systemd-test` on Linux with a running user systemd manager and
+unprivileged user namespaces, or invoke the Python script as root to use the
+system manager (as the Linux CI workflow does). It creates disposable state and services, reads
+the shipped filesystem sandbox directives, reproduces EXDEV with separate
+child mounts, then checks writer publication and quarantine/recovery/purge
+with the shared parent. It also checks catalog and incoming exclusions.
+Service UID separation is covered independently by `make isolation-test`.

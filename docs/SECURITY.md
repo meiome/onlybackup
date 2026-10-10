@@ -14,8 +14,13 @@ UIDs. The maintenance account never opens SQLite; it can access the archive and
 quarantine solely to execute writer-authorized operations.
 
 The systemd units use separate users and groups. `incoming` and SQLite remain
-writer-only. The archive and quarantine grant access only to the dedicated
-maintenance group; the receiver shares only the ingest-socket group and has the
+writer-only. `STATE/archives` is owned by writer, grouped to maintenance and mode `0710`;
+`STATE/archives/backups` and `STATE/archives/quarantine` use `0770`. Parent and
+children use `0700` in single-user use. Maintenance's writable systemd paths
+are `STATE/archives` and `STATE/maintenance`; catalog, SQLite sidecars and
+`incoming` remain inaccessible. Writer keeps the whole `STATE` writable,
+without separately mounting archive children. Archive access belongs only to
+the dedicated maintenance group; the receiver shares only the ingest-socket group and has the
 state hidden by systemd. This limits the effect of a compromised Internet-facing
 process, provided no additional ACLs, groups, or mounts grant access.
 
@@ -94,8 +99,10 @@ Native automatic retention uses an 80% physical-use trigger, a minimum cleanup t
 10% of filesystem capacity, administrator-configured per-key minima, current-day
 and last-copy exclusions, generation-bound per-operation tickets, and at least 48 hours of
 quarantine. Blocking anomalies stop new destructive authorizations. A
-physically reconciled transient operation error can remove only its own block
-after a fresh regular check; other blocking incidents retain their normal
+`maintenance-operation` error remains open when the source is intact, although
+authorized work can retry. Only physical confirmation or valid cancellation
+closes that error; verified `operation-uncertain` may resolve independently.
+After confirmation/cancellation, a fresh regular check can remove its own block; other blocking incidents retain their normal
 administrative recovery.
 
 Final validation records durable permission for exactly one operation. A later
@@ -105,7 +112,11 @@ reconciles committed work before new monitoring decisions, including when new
 destructive work is blocked. A local directory lock prevents overlapping
 physical executors even if the protocol lease expires. After a crash a new
 cycle may wait for the old lease for up to ten minutes; a stuck process has no
-timed failover. Uncertain physical outcomes require verification or repair.
+timed failover. Uncertain physical outcomes require verification or repair. The implementation
+uses complete cancellable SHA-256 verification, long maintenance
+client/server requests for `/v1/reconcile` and `/v1/confirm`, continued lease
+renewal and STOP cancellation; short requests retain a two-minute timeout.
+Install matching writer and maintenance binaries to use this behavior.
 Manual pause and its reason are persisted independently of automatic blocks.
 Only an explicit successful administrative resume clears the pause. It can be
 requested with `--when-ready`, persisted until a valid monitoring completion

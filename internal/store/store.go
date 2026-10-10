@@ -316,7 +316,17 @@ func Init(root string) error {
 	if err := validatePrivateDirectory(root); err != nil {
 		return err
 	}
-	for _, d := range []string{"incoming", "backups", "quarantine", "maintenance"} {
+	// A rejected init must not create destinations inside an existing archive.
+	if _, err := os.Lstat(filepath.Join(root, "metadata.db")); !os.IsNotExist(err) {
+		if err != nil {
+			return err
+		}
+		return errors.New("inizializzazione: catalogo gia esistente")
+	}
+	if err := rejectLegacyArchiveDirectories(root); err != nil {
+		return err
+	}
+	for _, d := range []string{"incoming", "archives", "archives/backups", "archives/quarantine", "maintenance"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0700); err != nil {
 			return err
 		}
@@ -361,14 +371,18 @@ func Init(root string) error {
 // modified by another local user. It deliberately reports unsafe existing
 // permissions instead of changing them behind the operator's back.
 func ValidateState(root string) error {
+	if err := ValidateArchiveLayout(root); err != nil {
+		return err
+	}
 	for _, item := range []struct {
 		path  string
 		modes []os.FileMode
 	}{
 		{root, []os.FileMode{0700, 0710}},
 		{filepath.Join(root, "incoming"), []os.FileMode{0700}},
-		{filepath.Join(root, "backups"), []os.FileMode{0700, 0770}},
-		{filepath.Join(root, "quarantine"), []os.FileMode{0700, 0770}},
+		{filepath.Join(root, "archives"), []os.FileMode{0700, 0710}},
+		{filepath.Join(root, "archives", "backups"), []os.FileMode{0700, 0770}},
+		{filepath.Join(root, "archives", "quarantine"), []os.FileMode{0700, 0770}},
 		{filepath.Join(root, "maintenance"), []os.FileMode{0700, 0770}},
 	} {
 		if err := validateDirectoryModes(item.path, item.modes...); err != nil {
@@ -378,13 +392,14 @@ func ValidateState(root string) error {
 	return nil
 }
 
-// PrepareMaintenanceState adds only the fixed directories introduced by v5.
-// It is safe for upgrades and never alters existing permissions or contents.
+// PrepareMaintenanceState never migrates a live archive. Upgrades must run the
+// explicit offline migrate-archives command before starting the new services.
 func PrepareMaintenanceState(root string) error {
-	for _, name := range []string{"quarantine", "maintenance"} {
-		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil && !os.IsExist(err) {
-			return err
-		}
+	if err := ValidateArchiveLayout(root); err != nil {
+		return err
+	}
+	if err := os.Mkdir(filepath.Join(root, "maintenance"), 0700); err != nil && !os.IsExist(err) {
+		return err
 	}
 	return nil
 }
@@ -502,10 +517,35 @@ func (s *Store) Revoke(id string) error {
 	 (SELECT backup_id FROM retention_operations WHERE state='requested' AND kind='purge')`, id); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`UPDATE retention_operations SET state='cancelled',ticket_hash='',lease_generation=0,completed_at=unixepoch(),
+	now := time.Now().UTC()
+	rows, err := tx.Query(`UPDATE retention_operations SET state='cancelled',ticket_hash='',lease_generation=0,completed_at=?,
 	 error='annullata automaticamente: chiave revocata' WHERE state='requested' AND kind IN ('quarantine','purge')
-	 AND backup_id IN (SELECT id FROM backups WHERE key_id=?)`, id); err != nil {
+	 AND backup_id IN (SELECT id FROM backups WHERE key_id=?) RETURNING id`, now.Unix(), id)
+	if err != nil {
 		return err
+	}
+	var cancelled []int64
+	for rows.Next() {
+		var operationID int64
+		if err = rows.Scan(&operationID); err != nil {
+			rows.Close()
+			return err
+		}
+		cancelled = append(cancelled, operationID)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	// Close only incidents for work cancelled by this revocation. Authorized
+	// work still requires physical reconciliation; independent holds remain.
+	for _, operationID := range cancelled {
+		if _, err = resolveMaintenanceOperationTx(tx, operationID, now, true); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

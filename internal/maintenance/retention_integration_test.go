@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,7 +67,7 @@ func TestRetentionEndToEndAcrossAdminWriterAndMaintenance(t *testing.T) {
 		if reserveErr != nil {
 			t.Fatal(reserveErr)
 		}
-		if err = os.WriteFile(filepath.Join(root, "backups", backup.ID+".backup"), data, 0440); err != nil {
+		if err = os.WriteFile(filepath.Join(root, "archives", "backups", backup.ID+".backup"), data, 0440); err != nil {
 			t.Fatal(err)
 		}
 		if err = catalog.Complete(backup.ID, at); err != nil {
@@ -155,7 +156,7 @@ func TestRetentionEndToEndAcrossAdminWriterAndMaintenance(t *testing.T) {
 	if err != nil || stored.Status != model.BackupDeleted {
 		t.Fatal(stored, err)
 	}
-	if _, err = os.Lstat(filepath.Join(root, "quarantine", backups[0].ID+".backup")); !os.IsNotExist(err) {
+	if _, err = os.Lstat(filepath.Join(root, "archives", "quarantine", backups[0].ID+".backup")); !os.IsNotExist(err) {
 		t.Fatalf("file purgato ancora presente: %v", err)
 	}
 }
@@ -184,7 +185,7 @@ func TestExpiredLeaseStopsPhysicalMoveAfterContentVerification(t *testing.T) {
 		if reserveErr != nil {
 			t.Fatal(reserveErr)
 		}
-		if err = os.WriteFile(filepath.Join(root, "backups", backup.ID+".backup"), data, 0440); err != nil {
+		if err = os.WriteFile(filepath.Join(root, "archives", "backups", backup.ID+".backup"), data, 0440); err != nil {
 			t.Fatal(err)
 		}
 		if err = catalog.Complete(backup.ID, at); err != nil {
@@ -235,16 +236,16 @@ func TestExpiredLeaseStopsPhysicalMoveAfterContentVerification(t *testing.T) {
 	if !errors.Is(err, errLeaseLost) {
 		t.Fatalf("operazione con lease vecchia: %v", err)
 	}
-	if _, err = os.Lstat(filepath.Join(root, "backups", backups[0].ID+".backup")); err != nil {
+	if _, err = os.Lstat(filepath.Join(root, "archives", "backups", backups[0].ID+".backup")); err != nil {
 		t.Fatalf("il worker vecchio ha rimosso il file archivio: %v", err)
 	}
-	if _, err = os.Lstat(filepath.Join(root, "quarantine", backups[0].ID+".backup")); !os.IsNotExist(err) {
+	if _, err = os.Lstat(filepath.Join(root, "archives", "quarantine", backups[0].ID+".backup")); !os.IsNotExist(err) {
 		t.Fatalf("il worker vecchio ha creato il file in quarantena: %v", err)
 	}
 }
 
 func TestTransientPhysicalFailureReconcilesAndRetriesWithoutManualResume(t *testing.T) {
-	for _, phase := range []string{"before-move", "after-move", "uncertain-then-intact", "uncertain-then-completed"} {
+	for _, phase := range []string{"before-checkpoint", "before-checkpoint-uncertain", "before-move", "after-move", "uncertain-then-intact", "uncertain-then-completed"} {
 		t.Run(phase, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "state")
 			if err := store.Init(root); err != nil {
@@ -269,7 +270,7 @@ func TestTransientPhysicalFailureReconcilesAndRetriesWithoutManualResume(t *test
 				if reserveErr != nil {
 					t.Fatal(reserveErr)
 				}
-				if err = os.WriteFile(filepath.Join(root, "backups", backup.ID+".backup"), data, 0440); err != nil {
+				if err = os.WriteFile(filepath.Join(root, "archives", "backups", backup.ID+".backup"), data, 0440); err != nil {
 					t.Fatal(err)
 				}
 				if err = catalog.Complete(backup.ID, at); err != nil {
@@ -315,8 +316,39 @@ func TestTransientPhysicalFailureReconcilesAndRetriesWithoutManualResume(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			archivePath := filepath.Join(root, "backups", op.BackupID+".backup")
-			quarantinePath := filepath.Join(root, "quarantine", op.BackupID+".backup")
+			beforeCheckpoint := strings.HasPrefix(phase, "before-checkpoint")
+			if !beforeCheckpoint {
+				if err = catalog.ValidateOperation(op.ID, authorized.Ticket, fixtureLease, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			archivePath := filepath.Join(root, "archives", "backups", op.BackupID+".backup")
+			quarantinePath := filepath.Join(root, "archives", "quarantine", op.BackupID+".backup")
+			if beforeCheckpoint {
+				// A real failed source hash happens before the final permission.
+				corrupt := append([]byte(nil), data...)
+				corrupt[len(corrupt)-1] ^= 1
+				if err = os.Chmod(archivePath, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err = os.WriteFile(archivePath, corrupt, 0600); err != nil {
+					t.Fatal(err)
+				}
+				guard := &leaseGuard{service: service, lease: fixtureLease}
+				if err = service.executeLeased(ctx, guard, authorized, backups[0]); err == nil {
+					t.Fatal("corrupt source accepted")
+				}
+				unchanged, queryErr := catalog.Operation(op.ID)
+				if queryErr != nil || unchanged.ExecutionCommitted {
+					t.Fatalf("failure committed permission: %+v %v", unchanged, queryErr)
+				}
+				if err = os.WriteFile(archivePath, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err = os.Chmod(archivePath, 0440); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if phase == "after-move" {
 				// A directory fsync may fail after rename has already succeeded.
 				if err = os.Rename(archivePath, quarantinePath); err != nil {
@@ -333,7 +365,7 @@ func TestTransientPhysicalFailureReconcilesAndRetriesWithoutManualResume(t *test
 			if err != nil || !blocked.DeletionBlocked {
 				t.Fatalf("l'errore fisico non ha bloccato la retention: %+v %v", blocked, err)
 			}
-			if phase == "uncertain-then-intact" || phase == "uncertain-then-completed" {
+			if phase == "uncertain-then-intact" || phase == "uncertain-then-completed" || phase == "before-checkpoint-uncertain" {
 				// A crash between link and unlink in the rename fallback leaves both paths.
 				if err = os.Link(archivePath, quarantinePath); err != nil {
 					t.Fatal(err)
@@ -370,6 +402,18 @@ func TestTransientPhysicalFailureReconcilesAndRetriesWithoutManualResume(t *test
 			if err != nil || stored.Status != model.BackupQuarantined {
 				t.Fatalf("backup non messo in quarantena: %+v %v", stored, err)
 			}
+			// A provisional retry runs after this cycle's monitoring. Its own
+			// hold clears on the next fresh clean check, not on issuing a ticket.
+			if beforeCheckpoint {
+				status, queryErr := catalog.AutomationStatus()
+				if queryErr != nil || !status.DeletionBlocked {
+					t.Fatalf("retry released the global hold early: %+v %v", status, queryErr)
+				}
+				now = now.Add(5 * time.Minute)
+				if err = service.RunOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
 			status, err := catalog.AutomationStatus()
 			if err != nil || status.DeletionBlocked || status.MonitoringState != model.MonitoringRegular {
 				t.Fatalf("blocco transitorio rimasto attivo: %+v %v", status, err)
@@ -392,7 +436,7 @@ func TestTransientPhysicalFailureReconcilesAndRetriesWithoutManualResume(t *test
 			}
 			resolutions := 0
 			for _, message := range messages {
-				if message.Kind == "resolution" {
+				if strings.HasPrefix(message.StableID, "maintenance-resolved:") {
 					resolutions++
 				}
 			}
@@ -430,7 +474,7 @@ func TestAcknowledgedMissingBackupDoesNotRestartAnomalyCycle(t *testing.T) {
 				if reserveErr != nil {
 					t.Fatal(reserveErr)
 				}
-				if err = os.WriteFile(filepath.Join(root, "backups", backup.ID+".backup"), data, 0440); err != nil {
+				if err = os.WriteFile(filepath.Join(root, "archives", "backups", backup.ID+".backup"), data, 0440); err != nil {
 					t.Fatal(err)
 				}
 				if err = catalog.Complete(backup.ID, at); err != nil {
@@ -495,7 +539,7 @@ func TestAcknowledgedMissingBackupDoesNotRestartAnomalyCycle(t *testing.T) {
 				}
 				location = "quarantine"
 			}
-			if err = os.Remove(filepath.Join(root, location, victim.ID+".backup")); err != nil {
+			if err = os.Remove(filepath.Join(root, "archives", location, victim.ID+".backup")); err != nil {
 				t.Fatal(err)
 			}
 			if err = service.RunOnce(ctx); err != nil {
@@ -725,7 +769,7 @@ func TestRunOnceRefreshesSnapshotAfterReconcile(t *testing.T) {
 		if reserveErr != nil {
 			t.Fatal(reserveErr)
 		}
-		if err = os.WriteFile(filepath.Join(root, "backups", backup.ID+".backup"), data, 0440); err != nil {
+		if err = os.WriteFile(filepath.Join(root, "archives", "backups", backup.ID+".backup"), data, 0440); err != nil {
 			t.Fatal(err)
 		}
 		if err = catalog.Complete(backup.ID, at); err != nil {
@@ -762,7 +806,7 @@ func TestRunOnceRefreshesSnapshotAfterReconcile(t *testing.T) {
 	if err = catalog.ReleaseMaintenanceLease(fixtureLease); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.Rename(filepath.Join(root, "backups", backups[0].ID+".backup"), filepath.Join(root, "quarantine", backups[0].ID+".backup")); err != nil {
+	if err = os.Rename(filepath.Join(root, "archives", "backups", backups[0].ID+".backup"), filepath.Join(root, "archives", "quarantine", backups[0].ID+".backup")); err != nil {
 		t.Fatal(err)
 	}
 	api := localapi.New(catalog, root)

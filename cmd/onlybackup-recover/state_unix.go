@@ -36,7 +36,7 @@ func targetFromState(root, id string) (recoveryTarget, error) {
 	}
 	return recoveryTarget{
 		ID:            backup.ID,
-		Source:        filepath.Join(root, "backups", backup.ID+".backup"),
+		Source:        filepath.Join(root, "archives", "backups", backup.ID+".backup"),
 		Size:          backup.Size,
 		SHA256:        backup.SHA256,
 		ContentFormat: backup.ContentFormat,

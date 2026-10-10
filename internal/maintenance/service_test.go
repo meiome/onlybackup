@@ -27,7 +27,7 @@ func TestWriterUnavailableClassifiesOnlyWriterTransportErrors(t *testing.T) {
 
 func TestPhysicalMissingIsDistinctFromScheduleMissing(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"backups", "quarantine"} {
+	for _, name := range []string{"archives", "archives/backups", "archives/quarantine"} {
 		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -42,7 +42,7 @@ func TestPhysicalMissingIsDistinctFromScheduleMissing(t *testing.T) {
 
 func TestAcknowledgedMissingIsNotReportedOrCountedAsRecoverable(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"backups", "quarantine"} {
+	for _, name := range []string{"archives", "archives/backups", "archives/quarantine"} {
 		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestAcknowledgedMissingIsNotReportedOrCountedAsRecoverable(t *testing.T) {
 
 func TestConcurrentCompletedUploadIsNotUnexpected(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"backups", "quarantine"} {
+	for _, name := range []string{"archives", "archives/backups", "archives/quarantine"} {
 		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -71,7 +71,7 @@ func TestConcurrentCompletedUploadIsNotUnexpected(t *testing.T) {
 	data := []byte("concurrent upload")
 	digest := sha256.Sum256(data)
 	backup := model.Backup{Receipt: model.Receipt{ID: "00000000000000000000000000000003", Status: model.BackupComplete, Size: int64(len(data)), SHA256: hex.EncodeToString(digest[:])}, KeyID: "key"}
-	if err := os.WriteFile(filepath.Join(root, "backups", backup.ID+".backup"), data, 0400); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "archives", "backups", backup.ID+".backup"), data, 0400); err != nil {
 		t.Fatal(err)
 	}
 	service := &Service{Root: root}
@@ -86,7 +86,7 @@ func TestConcurrentCompletedUploadIsNotUnexpected(t *testing.T) {
 
 func TestPhysicalQuarantineRecoveryAndPurge(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"backups", "quarantine", "maintenance"} {
+	for _, name := range []string{"archives", "archives/backups", "archives/quarantine", "maintenance"} {
 		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -94,7 +94,7 @@ func TestPhysicalQuarantineRecoveryAndPurge(t *testing.T) {
 	data := []byte("isolated test backup")
 	digest := sha256.Sum256(data)
 	b := model.Backup{Receipt: model.Receipt{ID: "00000000000000000000000000000001", Size: int64(len(data)), SHA256: hex.EncodeToString(digest[:])}}
-	archive := filepath.Join(root, "backups", b.ID+".backup")
+	archive := filepath.Join(root, "archives", "backups", b.ID+".backup")
 	if err := os.WriteFile(archive, data, 0400); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestPhysicalQuarantineRecoveryAndPurge(t *testing.T) {
 	if err := s.execute(model.RetentionOperation{BackupID: b.ID, Kind: "quarantine"}, b); err != nil {
 		t.Fatal(err)
 	}
-	quarantine := filepath.Join(root, "quarantine", b.ID+".backup")
+	quarantine := filepath.Join(root, "archives", "quarantine", b.ID+".backup")
 	if _, err := os.Stat(quarantine); err != nil {
 		t.Fatal(err)
 	}
@@ -125,14 +125,14 @@ func TestPhysicalQuarantineRecoveryAndPurge(t *testing.T) {
 
 func TestPhysicalOperationRejectsCollisionAndSymlink(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"backups", "quarantine", "maintenance"} {
+	for _, name := range []string{"archives", "archives/backups", "archives/quarantine", "maintenance"} {
 		_ = os.Mkdir(filepath.Join(root, name), 0700)
 	}
 	data := []byte("backup")
 	digest := sha256.Sum256(data)
 	b := model.Backup{Receipt: model.Receipt{ID: "00000000000000000000000000000002", Size: int64(len(data)), SHA256: hex.EncodeToString(digest[:])}}
-	archive := filepath.Join(root, "backups", b.ID+".backup")
-	quarantine := filepath.Join(root, "quarantine", b.ID+".backup")
+	archive := filepath.Join(root, "archives", "backups", b.ID+".backup")
+	quarantine := filepath.Join(root, "archives", "quarantine", b.ID+".backup")
 	if err := os.WriteFile(archive, data, 0400); err != nil {
 		t.Fatal(err)
 	}

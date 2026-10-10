@@ -87,7 +87,7 @@ func TestDepositDuplicateNamesAndForbiddenOperations(t *testing.T) {
 			t.Fatal(err)
 		}
 		ids = append(ids, receipt.ID)
-		path := filepath.Join(a.Root, "backups", receipt.ID+".backup")
+		path := filepath.Join(a.Root, "archives", "backups", receipt.ID+".backup")
 		got, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(got, data) {
 			t.Fatal(string(got), err)
@@ -152,7 +152,7 @@ func TestIdempotentDepositReturnsOriginalReceipt(t *testing.T) {
 	if status, _ := deposit([]byte("contenuto diverso")); status != http.StatusConflict {
 		t.Fatalf("changed replay status: %d", status)
 	}
-	files, err := os.ReadDir(filepath.Join(a.Root, "backups"))
+	files, err := os.ReadDir(filepath.Join(a.Root, "archives", "backups"))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("idempotent files: %v %v", files, err)
 	}
@@ -209,7 +209,7 @@ func TestInvalidUploadsNeverComplete(t *testing.T) {
 			if w.Code < 400 {
 				t.Fatal(w.Code, w.Body.String())
 			}
-			files, _ := os.ReadDir(filepath.Join(a.Root, "backups"))
+			files, _ := os.ReadDir(filepath.Join(a.Root, "archives", "backups"))
 			if len(files) != 0 {
 				t.Fatal(files)
 			}
@@ -237,7 +237,7 @@ func TestCrashReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	final := filepath.Join(a.Root, "backups", b.ID+".backup")
+	final := filepath.Join(a.Root, "archives", "backups", b.ID+".backup")
 	if err = os.WriteFile(final, data, 0400); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestCorruptFinalIsPreservedAndBlocksStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(a.Root, "backups", b.ID+".backup")
+	path := filepath.Join(a.Root, "archives", "backups", b.ID+".backup")
 	os.WriteFile(path, []byte("bad"), 0400)
 	if err = a.Reconcile(); err == nil {
 		t.Fatal("corruption ignored")
@@ -363,7 +363,7 @@ func TestFinalPathCollisionPreservesExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	final := filepath.Join(a.Root, "backups", upload.Backup.ID+".backup")
+	final := filepath.Join(a.Root, "archives", "backups", upload.Backup.ID+".backup")
 	existing := []byte("contenuto preesistente intatto")
 	if err = os.WriteFile(final, existing, 0400); err != nil {
 		t.Fatal(err)
@@ -410,7 +410,7 @@ func TestPublishedBackupSurvivesCatalogueFailure(t *testing.T) {
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("record pending: %+v %v", pending, err)
 	}
-	final := filepath.Join(a.Root, "backups", pending[0].ID+".backup")
+	final := filepath.Join(a.Root, "archives", "backups", pending[0].ID+".backup")
 	got, err := os.ReadFile(final)
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("backup pubblicato perso: %q %v", got, err)
@@ -441,7 +441,7 @@ func TestCompleteBodyFinalizesAfterRequestCancellation(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &receipt); err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(filepath.Join(a.Root, "backups", receipt.ID+".backup"))
+	got, err := os.ReadFile(filepath.Join(a.Root, "archives", "backups", receipt.ID+".backup"))
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("backup non finalizzato: %q %v", got, err)
 	}
@@ -492,7 +492,7 @@ func TestClientDisconnectAfterVerificationStillFinalizes(t *testing.T) {
 	for {
 		backups, listErr := a.Store.Backups("", 10)
 		if listErr == nil && len(backups) == 1 && backups[0].Status == "complete" {
-			got, readErr := os.ReadFile(filepath.Join(a.Root, "backups", backups[0].ID+".backup"))
+			got, readErr := os.ReadFile(filepath.Join(a.Root, "archives", "backups", backups[0].ID+".backup"))
 			if readErr != nil || !bytes.Equal(got, data) {
 				t.Fatalf("backup finalizzato: %q %v", got, readErr)
 			}

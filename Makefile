@@ -1,7 +1,7 @@
 GO := ./scripts/go.sh
 BINS := onlybackup onlybackup-admin onlybackup-writer onlybackup-receiver onlybackup-recover onlybackup-inspect onlybackup-maintenance
 
-.PHONY: build windows-client test race vet vuln check fmt smoke system-test isolation-test mysql-test
+.PHONY: build windows-client test race vet vuln check fmt smoke system-test systemd-test isolation-test mysql-test
 build:
 	@mkdir -p bin
 	@for name in $(BINS); do $(GO) build -buildvcs=false -trimpath -o bin/$$name ./cmd/$$name || exit; done
@@ -33,6 +33,9 @@ smoke: build
 
 system-test: build
 	ONLYBACKUP_BIN="$(CURDIR)/bin" $(GO) test -count=1 -v ./tests/system
+
+systemd-test:
+	python3 scripts/systemd-layout-test.py
 
 isolation-test: build
 	$(GO) test -c -o bin/onlybackup-system.test ./tests/system

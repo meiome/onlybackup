@@ -202,7 +202,7 @@ func (a *Writer) Receive(w http.ResponseWriter, body io.Reader, upload *Admissio
 	b := upload.Backup
 	defer upload.release()
 	staging := filepath.Join(a.Root, "incoming", b.ID+".part")
-	final := filepath.Join(a.Root, "backups", b.ID+".backup")
+	final := filepath.Join(a.Root, "archives", "backups", b.ID+".backup")
 	published := false
 	success := false
 	defer func() {
@@ -344,7 +344,7 @@ func (a *Writer) reserve(token string, m model.Metadata, size int64, digest, ide
 
 func (a *Writer) checkDisk(reservedBytes int64) error {
 	var fs syscall.Statfs_t
-	if err := syscall.Statfs(filepath.Join(a.Root, "backups"), &fs); err != nil {
+	if err := syscall.Statfs(filepath.Join(a.Root, "archives", "backups"), &fs); err != nil {
 		return err
 	}
 	if fs.Bsize <= 0 || reservedBytes < 0 || a.ReserveFree < 0 {
@@ -373,7 +373,7 @@ func (a *Writer) Reconcile() error {
 		if !model.ValidID(b.ID) {
 			return errors.New("identificativo non valido nel catalogo")
 		}
-		final := filepath.Join(a.Root, "backups", b.ID+".backup")
+		final := filepath.Join(a.Root, "archives", "backups", b.ID+".backup")
 		temp := filepath.Join(a.Root, "incoming", b.ID+".part")
 		info, err := os.Lstat(final)
 		if err == nil {

@@ -180,6 +180,8 @@ func (s *Service) RunOnce(ctx context.Context) (runErr error) {
 	if err := s.call(ctx, "POST", "/v1/check/start", map[string]string{}, &check); err != nil {
 		return err
 	}
+	// Use the writer's persisted boundary for both evaluation and coverage.
+	now = time.Unix(check.StartedAt, 0).UTC()
 	checkCompleted := false
 	defer func() {
 		if checkCompleted {
@@ -226,17 +228,23 @@ func (s *Service) RunOnce(ctx context.Context) (runErr error) {
 			return err
 		}
 	}
-	filesystem, err := s.Filesystem(filepath.Join(s.Root, "backups"))
+	filesystem, err := s.Filesystem(filepath.Join(s.Root, "archives", "backups"))
 	if err != nil {
 		_ = s.openFinding(ctx, policy.Finding{StableKey: "filesystem:archive", Kind: "filesystem", Detail: err.Error()})
 		return err
 	}
-	findings := s.fileFindings(snapshot)
+	findings := s.fileFindingsContext(ctx, snapshot)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var verified localclient.Snapshot
 	if err = s.call(ctx, "GET", "/v1/snapshot", nil, &verified); err != nil {
 		return err
 	}
-	findings = s.verifyUnexpectedFiles(findings, verified)
+	findings = s.verifyUnexpectedFilesContext(ctx, findings, verified)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	snapshot = verified
 	monitoringFindings, modelsReliable, expected48h, required, err := s.monitor(ctx, snapshot, check.ID, now)
 	if err != nil {
@@ -364,6 +372,10 @@ func (s *Service) reconcile(ctx context.Context, snapshot localclient.Snapshot, 
 }
 
 func (s *Service) fileFindings(snapshot localclient.Snapshot) []policy.Finding {
+	return s.fileFindingsContext(context.Background(), snapshot)
+}
+
+func (s *Service) fileFindingsContext(ctx context.Context, snapshot localclient.Snapshot) []policy.Finding {
 	var findings []policy.Finding
 	expected := make(map[string]string)
 	acknowledgedMissing := make(map[string]bool, len(snapshot.AcknowledgedMissingBackupIDs))
@@ -371,16 +383,19 @@ func (s *Service) fileFindings(snapshot localclient.Snapshot) []policy.Finding {
 		acknowledgedMissing[backupID] = true
 	}
 	for _, backup := range snapshot.Backups {
+		if ctx.Err() != nil {
+			return findings
+		}
 		var path string
 		switch backup.Status {
 		case model.BackupReceiving:
 			expected["backups/"+backup.ID+".backup"] = backup.ID
 			continue
 		case model.BackupComplete, model.BackupDeleting:
-			path = filepath.Join(s.Root, "backups", backup.ID+".backup")
+			path = filepath.Join(s.Root, "archives", "backups", backup.ID+".backup")
 			expected["backups/"+backup.ID+".backup"] = backup.ID
 		case model.BackupQuarantined, model.BackupPurging:
-			path = filepath.Join(s.Root, "quarantine", backup.ID+".backup")
+			path = filepath.Join(s.Root, "archives", "quarantine", backup.ID+".backup")
 			expected["quarantine/"+backup.ID+".backup"] = backup.ID
 		default:
 			continue
@@ -390,12 +405,12 @@ func (s *Service) fileFindings(snapshot localclient.Snapshot) []policy.Finding {
 				findings = append(findings, policy.Finding{StableKey: "file-missing:" + backup.ID, Kind: "file_missing", KeyID: backup.KeyID, BackupID: backup.ID, Detail: "file registrato nel catalogo ma fisicamente assente"})
 			}
 			continue
-		} else if err != nil || !validFile(path, backup) {
+		} else if err != nil || !validFileContext(ctx, path, backup) {
 			findings = append(findings, policy.Finding{StableKey: "catalog-file:" + backup.ID, Kind: "catalog", KeyID: backup.KeyID, BackupID: backup.ID, Detail: "catalogo e file non concordano"})
 		}
 	}
 	for _, directory := range []string{"backups", "quarantine"} {
-		entries, err := os.ReadDir(filepath.Join(s.Root, directory))
+		entries, err := os.ReadDir(filepath.Join(s.Root, "archives", directory))
 		if err != nil {
 			findings = append(findings, policy.Finding{StableKey: "catalog-directory:" + directory, Kind: "catalog", Detail: err.Error()})
 			continue
@@ -412,6 +427,10 @@ func (s *Service) fileFindings(snapshot localclient.Snapshot) []policy.Finding {
 }
 
 func (s *Service) verifyUnexpectedFiles(findings []policy.Finding, snapshot localclient.Snapshot) []policy.Finding {
+	return s.verifyUnexpectedFilesContext(context.Background(), findings, snapshot)
+}
+
+func (s *Service) verifyUnexpectedFilesContext(ctx context.Context, findings []policy.Finding, snapshot localclient.Snapshot) []policy.Finding {
 	expected := make(map[string]model.Backup)
 	for _, backup := range snapshot.Backups {
 		switch backup.Status {
@@ -423,6 +442,9 @@ func (s *Service) verifyUnexpectedFiles(findings []policy.Finding, snapshot loca
 	}
 	result := findings[:0]
 	for _, finding := range findings {
+		if ctx.Err() != nil {
+			return result
+		}
 		const prefix = "unexpected-file:"
 		if finding.Kind != "catalog" || !strings.HasPrefix(finding.StableKey, prefix) {
 			result = append(result, finding)
@@ -434,7 +456,7 @@ func (s *Service) verifyUnexpectedFiles(findings []policy.Finding, snapshot loca
 			result = append(result, finding)
 			continue
 		}
-		if !validFile(filepath.Join(s.Root, filepath.FromSlash(relative)), backup) {
+		if !validFileContext(ctx, filepath.Join(s.Root, "archives", filepath.FromSlash(relative)), backup) {
 			result = append(result, finding)
 		}
 	}
@@ -484,7 +506,10 @@ func (s *Service) monitor(ctx context.Context, snapshot localclient.Snapshot, ch
 	if snapshot.Status.Timezone == "" {
 		return nil, false, 0, 0, nil
 	}
-	all := observations(snapshot.Backups, snapshot.Exclusions)
+	// Excluded incident intervals are omitted only from learning. Monitoring
+	// must still match real arrivals and check their size; the writer suppresses
+	// findings individually according to each exclusion's configured kinds.
+	all := observations(snapshot.Backups, nil)
 	models := make(map[string]policy.KeyModel)
 	for keyID, raw := range snapshot.Models {
 		var learned policy.KeyModel
@@ -506,7 +531,7 @@ func (s *Service) monitor(ctx context.Context, snapshot localclient.Snapshot, ch
 		learned, exists := models[key.ID]
 		if !exists {
 			var err error
-			learned, err = policy.Learn(key.ID, snapshot.Status.Timezone, all, now)
+			learned, err = policy.Learn(key.ID, snapshot.Status.Timezone, observations(snapshot.Backups, snapshot.Exclusions), now)
 			if err != nil {
 				return nil, false, 0, 0, err
 			}
@@ -755,8 +780,8 @@ func (s *Service) executeLeased(ctx context.Context, guard *leaseGuard, op model
 	if !model.ValidID(backup.ID) || op.BackupID != backup.ID {
 		return errors.New("identita backup non valida")
 	}
-	archive := filepath.Join(s.Root, "backups", backup.ID+".backup")
-	quarantine := filepath.Join(s.Root, "quarantine", backup.ID+".backup")
+	archive := filepath.Join(s.Root, "archives", "backups", backup.ID+".backup")
+	quarantine := filepath.Join(s.Root, "archives", "quarantine", backup.ID+".backup")
 	checkpoint := func() error {
 		if op.ExecutionCommitted {
 			return nil // reconciled work already has a durable final permission
@@ -773,7 +798,7 @@ func (s *Service) executeLeased(ctx context.Context, guard *leaseGuard, op model
 	}
 	switch op.Kind {
 	case "quarantine":
-		if err := verifyExclusiveSource(archive, quarantine, backup); err != nil {
+		if err := verifyExclusiveSourceContext(ctx, archive, quarantine, backup); err != nil {
 			return err
 		}
 		if err := checkpoint(); err != nil {
@@ -787,7 +812,7 @@ func (s *Service) executeLeased(ctx context.Context, guard *leaseGuard, op model
 		}
 		return syncDirectories(filepath.Dir(archive), filepath.Dir(quarantine))
 	case "recover":
-		if err := verifyExclusiveSource(quarantine, archive, backup); err != nil {
+		if err := verifyExclusiveSourceContext(ctx, quarantine, archive, backup); err != nil {
 			return err
 		}
 		if err := checkpoint(); err != nil {
@@ -801,10 +826,10 @@ func (s *Service) executeLeased(ctx context.Context, guard *leaseGuard, op model
 		}
 		return syncDirectories(filepath.Dir(quarantine), filepath.Dir(archive))
 	case "purge":
-		if err := verifyExclusiveSource(quarantine, archive, backup); err != nil {
+		if err := verifyExclusiveSourceContext(ctx, quarantine, archive, backup); err != nil {
 			return err
 		}
-		if err := unlinkVerifiedBefore(quarantine, backup, checkpoint); err != nil {
+		if err := unlinkVerifiedBeforeContext(ctx, quarantine, backup, checkpoint); err != nil {
 			return err
 		}
 		return syncDirectories(filepath.Dir(quarantine))
@@ -817,8 +842,8 @@ func (s *Service) execute(op model.RetentionOperation, backup model.Backup) erro
 	if !model.ValidID(backup.ID) || op.BackupID != backup.ID {
 		return errors.New("identita backup non valida")
 	}
-	archive := filepath.Join(s.Root, "backups", backup.ID+".backup")
-	quarantine := filepath.Join(s.Root, "quarantine", backup.ID+".backup")
+	archive := filepath.Join(s.Root, "archives", "backups", backup.ID+".backup")
+	quarantine := filepath.Join(s.Root, "archives", "quarantine", backup.ID+".backup")
 	switch op.Kind {
 	case "quarantine":
 		if err := verifyExclusiveSource(archive, quarantine, backup); err != nil {
@@ -850,7 +875,14 @@ func (s *Service) execute(op model.RetentionOperation, backup model.Backup) erro
 }
 
 func verifyExclusiveSource(source, destination string, backup model.Backup) error {
-	if !validFile(source, backup) {
+	return verifyExclusiveSourceContext(context.Background(), source, destination, backup)
+}
+
+func verifyExclusiveSourceContext(ctx context.Context, source, destination string, backup model.Backup) error {
+	if !validFileContext(ctx, source, backup) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return errors.New("file sorgente assente, simbolico o con identita errata")
 	}
 	if _, err := os.Lstat(destination); err == nil {
@@ -875,11 +907,15 @@ func verifyExclusiveSourceIdentity(source, destination string, backup model.Back
 }
 
 func validFile(path string, backup model.Backup) bool {
+	return validFileContext(context.Background(), path, backup)
+}
+
+func validFileContext(ctx context.Context, path string, backup model.Backup) bool {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != backup.Size {
 		return false
 	}
-	return backupfile.Verify(path, backup.Size, backup.SHA256) == nil
+	return backupfile.VerifyContext(ctx, path, backup.Size, backup.SHA256) == nil
 }
 
 func renameNoReplace(source, destination string) error {
@@ -904,6 +940,10 @@ func unlinkVerified(path string, backup model.Backup) error {
 }
 
 func unlinkVerifiedBefore(path string, backup model.Backup, beforeRemove func() error) error {
+	return unlinkVerifiedBeforeContext(context.Background(), path, backup, beforeRemove)
+}
+
+func unlinkVerifiedBeforeContext(ctx context.Context, path string, backup model.Backup, beforeRemove func() error) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -917,7 +957,7 @@ func unlinkVerifiedBefore(path string, backup model.Backup, beforeRemove func() 
 	if err != nil || !os.SameFile(info, pathInfo) || pathInfo.Mode()&os.ModeSymlink != 0 {
 		return errors.New("file sostituito durante la verifica")
 	}
-	if err = backupfile.Verify(path, backup.Size, backup.SHA256); err != nil {
+	if err = backupfile.VerifyContext(ctx, path, backup.Size, backup.SHA256); err != nil {
 		return err
 	}
 	if beforeRemove != nil {

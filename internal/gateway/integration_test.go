@@ -69,7 +69,7 @@ func TestTLSClientThroughUnixWriter(t *testing.T) {
 	if strings.Count(progress.String(), "100.0%") != 1 || !strings.Contains(progress.String(), "Attendo conferma del server") {
 		t.Fatalf("avanzamento e conferma incoerenti: %s", progress.String())
 	}
-	saved, err := os.ReadFile(filepath.Join(state, "backups", receipt.ID+".backup"))
+	saved, err := os.ReadFile(filepath.Join(state, "archives", "backups", receipt.ID+".backup"))
 	if err != nil || !bytes.Equal(saved, data) {
 		t.Fatal("payload mismatch", err)
 	}
@@ -91,7 +91,7 @@ func TestTLSClientThroughUnixWriter(t *testing.T) {
 	if _, err = client.Send(context.Background(), o, file, model.Metadata{Description: "revoked", OriginalName: "db.sql"}, nil); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatal("revoked key accepted", err)
 	}
-	if _, err = os.Stat(filepath.Join(state, "backups", receipt.ID+".backup")); err != nil {
+	if _, err = os.Stat(filepath.Join(state, "archives", "backups", receipt.ID+".backup")); err != nil {
 		t.Fatal("revocation removed backup")
 	}
 }

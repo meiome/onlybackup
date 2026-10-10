@@ -3,6 +3,7 @@
 package localapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/meiome/onlybackup/internal/ingest"
+	"github.com/meiome/onlybackup/internal/backupfile"
 	"github.com/meiome/onlybackup/internal/model"
 	"github.com/meiome/onlybackup/internal/policy"
 	"github.com/meiome/onlybackup/internal/store"
@@ -46,6 +47,14 @@ func (a *API) handler(admin bool) http.Handler {
 		if admin {
 			a.serveAdmin(w, r)
 		} else {
+			if r.URL.Path == "/v1/reconcile" || r.URL.Path == "/v1/confirm" {
+				// Only whole-file verification commands may outlive the control timeout.
+				// No detached worker survives request cancellation or writer shutdown.
+				if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+					writeError(w, 500, err.Error())
+					return
+				}
+			}
 			a.serveMaintenance(w, r)
 		}
 	})
@@ -394,10 +403,27 @@ type Snapshot struct {
 	Exclusions                   []model.AnomalyExclusion   `json:"anomaly_exclusions"`
 	AcknowledgedMissingBackupIDs []string                   `json:"acknowledged_missing_backup_ids"`
 	Models                       map[string]json.RawMessage `json:"models"`
+	NextBackupID                 string                     `json:"next_backup_id,omitempty"`
+	BackupsThrough               int64                      `json:"backups_through,omitempty"`
 }
 
 func (a *API) serveMaintenance(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/snapshot" {
+		paged := r.URL.Query().Get("paged") == "1"
+		if after := r.URL.Query().Get("after"); paged && after != "" {
+			through, err := strconv.ParseInt(r.URL.Query().Get("through"), 10, 64)
+			if err != nil || through <= 0 || !model.ValidID(after) {
+				writeError(w, 400, "cursore catalogo non valido")
+				return
+			}
+			page, err := a.Store.BackupPage(after, through)
+			if err != nil {
+				writeError(w, 500, err.Error())
+				return
+			}
+			writeJSON(w, 200, page)
+			return
+		}
 		status, err := a.Store.AutomationStatus()
 		if err != nil {
 			writeError(w, 500, err.Error())
@@ -413,7 +439,14 @@ func (a *API) serveMaintenance(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, err.Error())
 			return
 		}
-		backups, err := a.Store.SnapshotBackups()
+		var backups []model.Backup
+		var page model.BackupPage
+		if paged {
+			page, err = a.Store.BackupPage("", 0)
+			backups = page.Backups
+		} else {
+			backups, err = a.Store.SnapshotBackups()
+		}
 		if err != nil {
 			writeError(w, 500, err.Error())
 			return
@@ -452,7 +485,7 @@ func (a *API) serveMaintenance(w http.ResponseWriter, r *http.Request) {
 			}
 			quotas = append(quotas, quota)
 		}
-		writeJSON(w, 200, Snapshot{Status: status, Settings: settings, Keys: keys, Quotas: quotas, Backups: backups, Operations: operations, Anomalies: anomalies, Exclusions: exclusions, AcknowledgedMissingBackupIDs: acknowledgedMissing, Models: models})
+		writeJSON(w, 200, Snapshot{Status: status, Settings: settings, Keys: keys, Quotas: quotas, Backups: backups, Operations: operations, Anomalies: anomalies, Exclusions: exclusions, AcknowledgedMissingBackupIDs: acknowledgedMissing, Models: models, NextBackupID: page.Next, BackupsThrough: page.Through})
 		return
 	}
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/mail/due" {
@@ -580,12 +613,12 @@ func (a *API) serveMaintenance(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if request.Done {
-			if err := a.verifyCompletedOperation(request.ID); err != nil {
+			if err := a.verifyCompletedOperationContext(r.Context(), request.ID); err != nil {
 				writeError(w, 409, "verifica fisica della conferma fallita: "+err.Error())
 				return
 			}
 		}
-		if err := a.Store.ConfirmOperation(request.ID, request.Ticket, request.Done, request.Detail, model.MaintenanceLease{Owner: request.Owner, Generation: request.Generation}, now); err != nil {
+		if err := a.Store.ConfirmOperation(request.ID, request.Ticket, request.Done, request.Detail, model.MaintenanceLease{Owner: request.Owner, Generation: request.Generation}, a.Now().UTC()); err != nil {
 			writeError(w, 409, err.Error())
 			return
 		}
@@ -620,7 +653,7 @@ func (a *API) serveMaintenance(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 409, err.Error())
 			return
 		}
-		result, err := a.reconcile(request.ID, now)
+		result, err := a.reconcileContext(r.Context(), request.ID, now, model.MaintenanceLease{Owner: request.Owner, Generation: request.Generation})
 		if err != nil {
 			writeError(w, 409, err.Error())
 			return
@@ -787,6 +820,10 @@ func (a *API) serveMaintenance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) verifyCompletedOperation(operationID int64) error {
+	return a.verifyCompletedOperationContext(context.Background(), operationID)
+}
+
+func (a *API) verifyCompletedOperationContext(ctx context.Context, operationID int64) error {
 	op, err := a.Store.Operation(operationID)
 	if err != nil {
 		return err
@@ -795,9 +832,12 @@ func (a *API) verifyCompletedOperation(operationID int64) error {
 	if err != nil {
 		return err
 	}
-	archive := filepath.Join(a.Root, "backups", backup.ID+".backup")
-	quarantine := filepath.Join(a.Root, "quarantine", backup.ID+".backup")
-	archiveOK, quarantineOK := validBackupFile(archive, backup), validBackupFile(quarantine, backup)
+	archive := filepath.Join(a.Root, "archives", "backups", backup.ID+".backup")
+	quarantine := filepath.Join(a.Root, "archives", "quarantine", backup.ID+".backup")
+	archiveOK, quarantineOK := validBackupFileContext(ctx, archive, backup), validBackupFileContext(ctx, quarantine, backup)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	archiveMissing, quarantineMissing := missing(archive), missing(quarantine)
 	switch op.Kind {
 	case "quarantine":
@@ -819,6 +859,10 @@ func (a *API) verifyCompletedOperation(operationID int64) error {
 }
 
 func (a *API) reconcile(operationID int64, now time.Time) (string, error) {
+	return a.reconcileContext(context.Background(), operationID, now)
+}
+
+func (a *API) reconcileContext(ctx context.Context, operationID int64, now time.Time, lease ...model.MaintenanceLease) (string, error) {
 	op, err := a.Store.Operation(operationID)
 	if err != nil {
 		return "", err
@@ -833,12 +877,21 @@ func (a *API) reconcile(operationID int64, now time.Time) (string, error) {
 	if !model.ValidID(backup.ID) {
 		return "", errors.New("ID backup non valido")
 	}
-	archive := filepath.Join(a.Root, "backups", backup.ID+".backup")
-	quarantine := filepath.Join(a.Root, "quarantine", backup.ID+".backup")
-	archiveOK := validBackupFile(archive, backup)
-	quarantineOK := validBackupFile(quarantine, backup)
+	archive := filepath.Join(a.Root, "archives", "backups", backup.ID+".backup")
+	quarantine := filepath.Join(a.Root, "archives", "quarantine", backup.ID+".backup")
+	archiveOK := validBackupFileContext(ctx, archive, backup)
+	quarantineOK := validBackupFileContext(ctx, quarantine, backup)
 	archiveMissing := missing(archive)
 	quarantineMissing := missing(quarantine)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if len(lease) != 0 {
+		now = a.Now().UTC()
+		if err := a.Store.ValidateMaintenanceLease(lease[0], now); err != nil {
+			return "", err
+		}
+	}
 	done, untouched := false, false
 	switch op.Kind {
 	case "quarantine":
@@ -876,9 +929,13 @@ func missing(path string) bool {
 }
 
 func validBackupFile(path string, backup model.Backup) bool {
+	return validBackupFileContext(context.Background(), path, backup)
+}
+
+func validBackupFileContext(ctx context.Context, path string, backup model.Backup) bool {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != backup.Size {
 		return false
 	}
-	return ingest.Verify(path, backup.Size, backup.SHA256) == nil
+	return backupfile.VerifyContext(ctx, path, backup.Size, backup.SHA256) == nil
 }

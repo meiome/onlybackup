@@ -108,7 +108,7 @@ func TestFinalPermissionSurvivesRevocationAndTimeout(t *testing.T) {
 				if kind == "purge" {
 					directory = "quarantine"
 				}
-				if _, err = os.Lstat(filepath.Join(f.root, directory, op.BackupID+".backup")); !os.IsNotExist(err) {
+				if _, err = os.Lstat(filepath.Join(f.root, "archives", directory, op.BackupID+".backup")); !os.IsNotExist(err) {
 					t.Fatalf("source not removed: %v", err)
 				}
 				if err = f.db.ReconcileAuthorized(op.ID, f.now); err != nil {
@@ -142,7 +142,7 @@ func TestRunOnceHoldsLockPastFinalPermissionUntilReconciliation(t *testing.T) {
 	if err = s.RunOnce(context.Background()); err == nil || !injected {
 		t.Fatalf("expired confirmation: injected=%t err=%v", injected, err)
 	}
-	if _, err = os.Lstat(filepath.Join(f.root, "backups", op.BackupID+".backup")); !os.IsNotExist(err) {
+	if _, err = os.Lstat(filepath.Join(f.root, "archives", "backups", op.BackupID+".backup")); !os.IsNotExist(err) {
 		t.Fatalf("admitted physical work stopped: %v", err)
 	}
 	if err = s.RunOnce(context.Background()); err != nil {
@@ -175,7 +175,7 @@ func TestCommittedWorkResumesAfterCrashDespiteRevocation(t *testing.T) {
 					if kind == "purge" {
 						source, dest = dest, source
 					}
-					if err := os.Link(filepath.Join(f.root, source, op.BackupID+".backup"), filepath.Join(f.root, dest, op.BackupID+".backup")); err != nil {
+					if err := os.Link(filepath.Join(f.root, "archives", source, op.BackupID+".backup"), filepath.Join(f.root, "archives", dest, op.BackupID+".backup")); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -340,7 +340,7 @@ func (f *permissionFixture) add(t *testing.T, at time.Time) model.Backup {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(f.root, "backups", b.ID+".backup"), data, 0440); err != nil {
+	if err = os.WriteFile(filepath.Join(f.root, "archives", "backups", b.ID+".backup"), data, 0440); err != nil {
 		t.Fatal(err)
 	}
 	if err = f.db.Complete(b.ID, at); err != nil {
@@ -402,7 +402,7 @@ func (f *permissionFixture) authorize(t *testing.T, kind string) (model.Retentio
 		t.Fatal(err)
 	}
 	if kind == "purge" {
-		if err = os.Rename(filepath.Join(f.root, "backups", op.BackupID+".backup"), filepath.Join(f.root, "quarantine", op.BackupID+".backup")); err != nil {
+		if err = os.Rename(filepath.Join(f.root, "archives", "backups", op.BackupID+".backup"), filepath.Join(f.root, "archives", "quarantine", op.BackupID+".backup")); err != nil {
 			t.Fatal(err)
 		}
 		if err = f.db.ConfirmOperation(op.ID, op.Ticket, true, "", lease, f.now); err != nil {

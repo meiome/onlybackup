@@ -32,6 +32,11 @@ receiver operations against the archive.
 For an offline recovery exercise, a receipt and its matching `.backup` file
 can be passed directly to `onlybackup-recover`; a complete Linux state copy also
 supports `--state DIRECTORY --id ID` for a catalog row still marked `complete`.
+That state copy must preserve `archives/backups`, `archives/quarantine`, the
+catalog and sidecars; completed files are at
+`DIRECTORY/archives/backups/ID.backup`. Historical copies using `DIRECTORY/backups`
+and `DIRECTORY/quarantine` require the offline migration with matching binaries
+from [INSTALL.md](INSTALL.md#upgrade); do not modify the live archive to run an exercise.
 The latter does not recover a quarantined, purging, or deleted row. A live
 quarantine restore requires the administrative console and running services;
 when testing a cold copy, inspect its files and use receipt/file recovery.

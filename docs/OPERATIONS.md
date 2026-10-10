@@ -97,7 +97,24 @@ separate permissions. Maintenance resumes committed work before new monitoring
 and selection. After a crash it may wait up to ten minutes for the old protocol
 lease. Its directory lock prevents two physical executors, but a stuck executor
 has no timed replacement. An uncertain physical outcome remains blocked until
-verified or repaired. See the retention guide before restarting a stuck cycle.
+verified or repaired. An intact source allows retry but leaves the
+`maintenance-operation` error open until physical confirmation or valid
+cancellation. Verification can resolve `operation-uncertain` independently. A retry before final
+permission may bypass only its own error, after reconciliation and a fresh
+check with reliable models; every independent hold and current policy check
+remains effective. This does not release retention for other operations.
+See the retention guide before restarting a stuck cycle.
+
+SHA-256 verification is complete and cancellable. Both
+maintenance client and server allow long `/v1/reconcile` and `/v1/confirm`
+requests; short requests remain limited to two minutes. Lease renewal continues
+and STOP cancels verification. Check installed binary support before relying on
+this behavior. For filesystem layout upgrades, follow the offline
+[inventory, migration and rollback procedure](INSTALL.md#upgrade): keep all
+three services stopped, migrate by rename and install matching units. Archive
+paths are `STATE/archives/{backups,quarantine}`; maintenance has writable
+`STATE/archives` and `STATE/maintenance`, and cannot access the catalog, sidecars
+or incoming. Writer keeps writable whole state without separate child mounts.
 
 `retention pause` persists independently of automatic anomaly blocks until an
 explicit successful `retention resume`. Excluding an incident does not remove
@@ -217,7 +234,7 @@ state, completed backups, ownership, modes, ACLs, and extended attributes.
 1. Stop the receiver, writer, and maintenance service and verify all are inactive.
 2. Confirm that no OnlyBackup process or administrative command still has the
    state open.
-3. Copy the complete `/var/lib/onlybackup` tree—including `quarantine`, the
+3. Copy the complete `/var/lib/onlybackup` tree—including `archives/backups`, `archives/quarantine`, the
    maintenance state, and `metadata.db.v4.cold-copy` when present—to independent storage with a
    tool that preserves metadata.
 4. Record the copy time, release version, total size, file count, and a digest

@@ -71,12 +71,6 @@ func runArgs(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err = store.PrepareMaintenanceState(*root); err != nil {
-		return err
-	}
-	if err = store.ValidateState(*root); err != nil {
-		return err
-	}
 	lock, err := os.OpenFile(filepath.Join(*root, "writer.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return err
@@ -86,6 +80,12 @@ func runArgs(args []string) error {
 		return errors.New("un writer è già attivo su questo archivio")
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	if err = store.PrepareMaintenanceState(*root); err != nil {
+		return err
+	}
+	if err = store.ValidateState(*root); err != nil {
+		return err
+	}
 	s, err := store.Open(filepath.Join(*root, "metadata.db"), false)
 	if err != nil {
 		return err
@@ -151,6 +151,8 @@ func runArgs(args []string) error {
 	defer stopSignals()
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
+	adminServer.BaseContext = func(net.Listener) context.Context { return ctx }
+	maintenanceServer.BaseContext = func(net.Listener) context.Context { return ctx }
 	localErrors := make(chan error, 2)
 	var localServers sync.WaitGroup
 	serveLocal := func(localServer *http.Server, localListener net.Listener) {

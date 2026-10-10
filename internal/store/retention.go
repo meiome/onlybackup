@@ -485,7 +485,13 @@ func (s *Store) AuthorizeOperation(operationID int64, lease model.MaintenanceLea
 		return out, nil
 	}
 	if blocked && out.Kind != "recover" {
-		return out, model.ErrRetentionBlocked
+		retry, retryErr := canRetryReconciledOperationTx(tx, out, now)
+		if retryErr != nil {
+			return out, retryErr
+		}
+		if !retry {
+			return out, model.ErrRetentionBlocked
+		}
 	}
 	if out.Kind != "recover" {
 		if err = checkRetentionMinimumTx(tx, out.BackupID, now); err != nil {
@@ -569,7 +575,13 @@ func (s *Store) ValidateOperation(operationID int64, ticket string, lease model.
 		return model.ErrTicket
 	}
 	if blocked && op.Kind != "recover" {
-		return model.ErrRetentionBlocked
+		retry, retryErr := canRetryReconciledOperationTx(tx, op, now)
+		if retryErr != nil {
+			return retryErr
+		}
+		if !retry {
+			return model.ErrRetentionBlocked
+		}
 	}
 	if op.Kind != "recover" {
 		if err = checkRetentionMinimumTx(tx, op.BackupID, now); err != nil {
@@ -624,9 +636,27 @@ func (s *Store) ConfirmOperation(operationID int64, ticket string, physicalDone 
 		return model.ErrTicket
 	}
 	if !physicalDone {
-		if _, err = tx.Exec(`UPDATE retention_operations SET error=? WHERE id=?`, detail, op.ID); err == nil {
-			err = openAnomalyTx(tx, fmt.Sprintf("maintenance-operation:%d", op.ID), "maintenance", "", op.BackupID, "errore operazione di manutenzione: "+detail, now)
+		operationDetail := detail
+		if operationDetail == reconciledSourceIntact {
+			// The transport's free-form error cannot forge the writer's
+			// intact-source reconciliation marker.
+			operationDetail = "errore operativo: " + detail
 		}
+		failureKey := fmt.Sprintf("maintenance-operation:%d", op.ID)
+		failureDetail := "errore operazione di manutenzione: " + detail
+		if _, err = tx.Exec(`UPDATE retention_operations SET error=? WHERE id=?`, operationDetail, op.ID); err != nil {
+			return err
+		}
+		// Repeated source failures may report different details. Refresh only
+		// a hold already attributable to this same open error; never replace
+		// an administrative or independent reason with the retry's error.
+		if _, err = tx.Exec(`UPDATE automation_state SET block_reason=? WHERE id=1
+ AND deletion_blocked=1 AND block_reason=(SELECT 'anomalia: ' || detail FROM anomalies
+ WHERE stable_key=? AND kind='maintenance' AND backup_id=? AND resolved_at=0)`,
+			"anomalia: "+failureDetail, failureKey, op.BackupID); err != nil {
+			return err
+		}
+		err = openAnomalyTx(tx, failureKey, "maintenance", "", op.BackupID, failureDetail, now)
 		if err != nil {
 			return err
 		}
@@ -656,7 +686,7 @@ func (s *Store) ConfirmOperation(operationID int64, ticket string, physicalDone 
 	if n, _ := confirmed.RowsAffected(); n != 1 {
 		return model.ErrTicket
 	}
-	if _, err = resolveMaintenanceOperationTx(tx, operationID, now); err != nil {
+	if _, err = resolveMaintenanceOperationTx(tx, operationID, now, true); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -703,7 +733,7 @@ func (s *Store) ReconcileAuthorized(operationID int64, now time.Time) error {
 	if n, _ := confirmed.RowsAffected(); n != 1 {
 		return model.ErrTicket
 	}
-	if _, err = resolveMaintenanceOperationTx(tx, operationID, now); err != nil {
+	if _, err = resolveMaintenanceOperationTx(tx, operationID, now, true); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -741,7 +771,7 @@ func (s *Store) ResetAuthorized(operationID int64, now time.Time) error {
 		if err = changed(tx.Exec(`UPDATE retention_operations SET ticket_hash='',lease_generation=0 WHERE id=? AND state='authorized' AND execution_committed=1`, operationID)); err != nil {
 			return err
 		}
-		if _, err = resolveMaintenanceOperationTx(tx, operationID, now); err != nil {
+		if _, err = resolveMaintenanceOperationTx(tx, operationID, now, false); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -757,15 +787,15 @@ func (s *Store) ResetAuthorized(operationID int64, now time.Time) error {
 		if err = changed(tx.Exec(`UPDATE retention_operations SET state='cancelled',ticket_hash='',lease_generation=0,completed_at=?,error='annullata automaticamente: chiave revocata' WHERE id=? AND state='authorized'`, now.Unix(), operationID)); err != nil {
 			return err
 		}
-		if _, err = resolveMaintenanceOperationTx(tx, operationID, now); err != nil {
+		if _, err = resolveMaintenanceOperationTx(tx, operationID, now, true); err != nil {
 			return err
 		}
 		return tx.Commit()
 	}
-	if err = changed(tx.Exec(`UPDATE retention_operations SET state='requested',ticket_hash='',lease_generation=0,authorized_at=0,error='autorizzazione ricreata dopo riavvio prima dell operazione fisica' WHERE id=? AND state='authorized'`, operationID)); err != nil {
+	if err = changed(tx.Exec(`UPDATE retention_operations SET state='requested',ticket_hash='',lease_generation=0,authorized_at=0,error=? WHERE id=? AND state='authorized'`, reconciledSourceIntact, operationID)); err != nil {
 		return err
 	}
-	if _, err = resolveMaintenanceOperationTx(tx, operationID, now); err != nil {
+	if _, err = resolveMaintenanceOperationTx(tx, operationID, now, false); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -783,6 +813,13 @@ func (s *Store) CancelQuarantineRequest(backupID, actor string, now time.Time) e
 		return err
 	}
 	defer tx.Rollback()
+	var operationID int64
+	if err = tx.QueryRow("SELECT id FROM retention_operations WHERE backup_id=? AND kind='quarantine' AND state='requested'", backupID).Scan(&operationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("richiesta non annullabile: gia autorizzata o inesistente")
+		}
+		return err
+	}
 	res, err := tx.Exec(`UPDATE retention_operations SET state='cancelled',completed_at=?,error='annullata da ' || ? WHERE backup_id=? AND kind='quarantine' AND state='requested'`, now.Unix(), actor, backupID)
 	if err != nil {
 		return err
@@ -800,6 +837,9 @@ func (s *Store) CancelQuarantineRequest(backupID, actor string, now time.Time) e
  activation_pending=0,resume_pending=0,resume_requested_at=0 WHERE id=1`)
 	}
 	if err != nil {
+		return err
+	}
+	if _, err = resolveMaintenanceOperationTx(tx, operationID, now, true); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1029,20 +1069,28 @@ func (s *Store) ResolveAnomaly(stableKey string, now time.Time) (bool, error) {
 	return true, tx.Commit()
 }
 
-func resolveMaintenanceOperationTx(tx *sql.Tx, operationID int64, now time.Time) (bool, error) {
+func resolveMaintenanceOperationTx(tx *sql.Tx, operationID int64, now time.Time, finished bool) (bool, error) {
 	stableKey := fmt.Sprintf("maintenance-operation:%d", operationID)
 	uncertainKey := fmt.Sprintf("operation-uncertain:%d", operationID)
-	res, err := tx.Exec(`UPDATE anomalies SET resolved_at=?,resolved_by='automatic',resolution_note='stato fisico verificato dalla riconciliazione'
- WHERE stable_key IN (?,?) AND kind='maintenance' AND resolved_at=0`, now.Unix(), stableKey, uncertainKey)
+	subject, prefix := "OnlyBackup: errore di manutenzione risolto", "maintenance-resolved"
+	note := "operazione completata o annullata; errore operativo chiuso"
+	if !finished {
+		// An intact source clarifies uncertainty, but does not fix a failed move.
+		stableKey = uncertainKey
+		note = "stato fisico verificato; ripresa possibile"
+		subject, prefix = "OnlyBackup: esito di manutenzione chiarito", "maintenance-clarified"
+	}
+	res, err := tx.Exec(`UPDATE anomalies SET resolved_at=?,resolved_by='automatic',resolution_note=?
+ WHERE stable_key IN (?,?) AND kind='maintenance' AND resolved_at=0`, now.Unix(), note, stableKey, uncertainKey)
 	if err != nil {
 		return false, err
 	}
 	if changed, _ := res.RowsAffected(); changed == 0 {
 		return false, nil
 	}
-	mailID := fmt.Sprintf("maintenance-resolved:%d:%d", operationID, now.Unix())
+	mailID := fmt.Sprintf("%s:%d:%d", prefix, operationID, now.Unix())
 	if _, err = tx.Exec(`INSERT INTO mail_queue(stable_id,kind,subject,body,created_at,next_attempt_at)
- VALUES(?,'resolution','OnlyBackup: errore di manutenzione risolto',?,?,?)`, mailID, stableKey, now.Unix(), now.Unix()); err != nil {
+ VALUES(?,'resolution',?,?,?,?)`, mailID, subject, stableKey, now.Unix(), now.Unix()); err != nil {
 		return false, err
 	}
 	return true, nil

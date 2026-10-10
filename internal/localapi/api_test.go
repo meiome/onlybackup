@@ -177,7 +177,7 @@ func TestReconcileCrashBeforeAndAfterPhysicalOperations(t *testing.T) {
 		if reserveErr != nil {
 			t.Fatal(reserveErr)
 		}
-		if err = os.WriteFile(filepath.Join(api.Root, "backups", backup.ID+".backup"), data, 0440); err != nil {
+		if err = os.WriteFile(filepath.Join(api.Root, "archives", "backups", backup.ID+".backup"), data, 0440); err != nil {
 			t.Fatal(err)
 		}
 		if err = s.Complete(backup.ID, at); err != nil {
@@ -212,10 +212,26 @@ func TestReconcileCrashBeforeAndAfterPhysicalOperations(t *testing.T) {
 	if quarantine, err = s.AuthorizeOperation(quarantine.ID, lease, now); err != nil {
 		t.Fatal(err)
 	}
-	archivePath := filepath.Join(api.Root, "backups", backups[0].ID+".backup")
-	quarantinePath := filepath.Join(api.Root, "quarantine", backups[0].ID+".backup")
+	archivePath := filepath.Join(api.Root, "archives", "backups", backups[0].ID+".backup")
+	quarantinePath := filepath.Join(api.Root, "archives", "quarantine", backups[0].ID+".backup")
 	if err = os.Rename(archivePath, quarantinePath); err != nil {
 		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err = api.reconcileContext(ctx, quarantine.ID, now); err != context.Canceled {
+		t.Fatalf("cancelled reconciliation: %v", err)
+	}
+	if err = api.verifyCompletedOperationContext(ctx, quarantine.ID); err != context.Canceled {
+		t.Fatalf("cancelled confirmation: %v", err)
+	}
+	unchanged, err := s.Operation(quarantine.ID)
+	if err != nil || unchanged.State != "authorized" {
+		t.Fatalf("cancelled verification changed operation: %+v %v", unchanged, err)
+	}
+	active, err := s.Anomalies(true)
+	if err != nil || len(active) != 0 {
+		t.Fatalf("cancelled verification invented anomalies: %+v %v", active, err)
 	}
 	if result, reconcileErr := api.reconcile(quarantine.ID, now); reconcileErr != nil || result != "confirmed" {
 		t.Fatalf("post-move reconciliation: %q %v", result, reconcileErr)
@@ -290,7 +306,7 @@ func TestConfirmRequiresVerifiedPhysicalResult(t *testing.T) {
 		if reserveErr != nil {
 			t.Fatal(reserveErr)
 		}
-		if err = os.WriteFile(filepath.Join(api.Root, "backups", backup.ID+".backup"), data, 0440); err != nil {
+		if err = os.WriteFile(filepath.Join(api.Root, "archives", "backups", backup.ID+".backup"), data, 0440); err != nil {
 			t.Fatal(err)
 		}
 		if err = s.Complete(backup.ID, at); err != nil {
@@ -330,8 +346,8 @@ func TestConfirmRequiresVerifiedPhysicalResult(t *testing.T) {
 	if response.Code != http.StatusConflict {
 		t.Fatalf("conferma accettata senza spostamento fisico: %d %s", response.Code, response.Body.String())
 	}
-	archive := filepath.Join(api.Root, "backups", backups[0].ID+".backup")
-	quarantine := filepath.Join(api.Root, "quarantine", backups[0].ID+".backup")
+	archive := filepath.Join(api.Root, "archives", "backups", backups[0].ID+".backup")
+	quarantine := filepath.Join(api.Root, "archives", "quarantine", backups[0].ID+".backup")
 	if err = os.WriteFile(quarantine, data, 0440); err != nil {
 		t.Fatal(err)
 	}

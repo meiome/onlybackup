@@ -520,7 +520,7 @@ func simulateRetention(call func(string, string, any, any) error, root string, o
 		return err
 	}
 	var stat syscall.Statfs_t
-	if err = syscall.Statfs(filepath.Join(root, "backups"), &stat); err != nil {
+	if err = syscall.Statfs(filepath.Join(root, "archives", "backups"), &stat); err != nil {
 		return err
 	}
 	revoked := make(map[string]bool)

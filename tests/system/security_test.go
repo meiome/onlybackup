@@ -106,10 +106,13 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 	}
 	run(writerID, "onlybackup-admin", "--state", state, "init")
 	if isolated {
+		if err := os.Chmod(filepath.Join(state, "archives"), 0710); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.Chmod(state, 0710); err != nil {
 			t.Fatal(err)
 		}
-		for _, name := range []string{"backups", "quarantine", "maintenance"} {
+		for _, name := range []string{"archives/backups", "archives/quarantine", "maintenance"} {
 			path := filepath.Join(state, name)
 			if err := os.Chown(path, int(writerID.Uid), int(maintenanceID.Gid)); err != nil {
 				t.Fatal(err)
@@ -239,7 +242,7 @@ func TestProtectedDepositAndRecovery(t *testing.T) {
 			t.Fatalf("receipt: %v", err)
 		}
 		ids[format] = receipt.ID
-		stored, err := os.ReadFile(filepath.Join(state, "backups", receipt.ID+".backup"))
+		stored, err := os.ReadFile(filepath.Join(state, "archives", "backups", receipt.ID+".backup"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -341,7 +344,19 @@ func TestMaintenanceBoundaries(t *testing.T) {
 	if entries, err := os.ReadDir(filepath.Join(state, "incoming")); err == nil {
 		t.Fatalf("maintenance traversed incoming: %v", entries)
 	}
-	backup := filepath.Join(state, "backups", os.Getenv("ONLYBACKUP_PROBE_ID")+".backup")
+	backup := filepath.Join(state, "archives", "backups", os.Getenv("ONLYBACKUP_PROBE_ID")+".backup")
+	if file, err := os.OpenFile(backup, os.O_WRONLY, 0); err == nil {
+		file.Close()
+		t.Fatal("maintenance can modify backup contents")
+	}
+	if err := os.Chmod(backup, 0660); err == nil {
+		t.Fatal("maintenance can change backup mode")
+	}
+	for _, parent := range []string{state, filepath.Join(state, "archives")} {
+		if err := os.Mkdir(filepath.Join(parent, "unauthorized-child"), 0700); err == nil {
+			t.Fatalf("maintenance can create children in protected parent: %s", parent)
+		}
+	}
 	if file, err := os.Open(backup); err != nil {
 		t.Fatalf("maintenance cannot verify backup: %v", err)
 	} else {
@@ -358,8 +373,8 @@ func TestArchiveDenied(t *testing.T) {
 	if state == "" {
 		t.Skip("only executed as unprivileged subprocess")
 	}
-	file := filepath.Join(state, "backups", os.Getenv("ONLYBACKUP_PROBE_ID")+".backup")
-	for _, path := range []string{state, filepath.Join(state, "backups"), file, filepath.Join(state, "metadata.db")} {
+	file := filepath.Join(state, "archives", "backups", os.Getenv("ONLYBACKUP_PROBE_ID")+".backup")
+	for _, path := range []string{state, filepath.Join(state, "archives", "backups"), file, filepath.Join(state, "metadata.db")} {
 		if err := os.Chmod(path, 0777); err == nil {
 			t.Fatalf("chmod permitted: %s", path)
 		}

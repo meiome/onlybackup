@@ -27,7 +27,7 @@ func TestAutomaticRetentionReclaimsSpaceWithQuarantineMarginWarning(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = os.WriteFile(filepath.Join(service.Root, "backups", backup.ID+".backup"), data, 0440); err != nil {
+		if err = os.WriteFile(filepath.Join(service.Root, "archives", "backups", backup.ID+".backup"), data, 0440); err != nil {
 			t.Fatal(err)
 		}
 		if err = db.Complete(backup.ID, at); err != nil {
@@ -76,7 +76,7 @@ func TestAutomaticRetentionReclaimsSpaceWithQuarantineMarginWarning(t *testing.T
 			if backup.PurgeNotBefore != now.Add(48*time.Hour).Unix() {
 				t.Fatalf("quarantine shortened: %+v", backup)
 			}
-			if _, err = os.Stat(filepath.Join(service.Root, "quarantine", backup.ID+".backup")); err != nil {
+			if _, err = os.Stat(filepath.Join(service.Root, "archives", "quarantine", backup.ID+".backup")); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -108,7 +108,7 @@ func TestAutomaticRetentionReclaimsSpaceWithQuarantineMarginWarning(t *testing.T
 		if err != nil || stored.Status != model.BackupDeleted {
 			t.Fatalf("capacity warning prevented purge: %+v %v", stored, err)
 		}
-		if _, err = os.Lstat(filepath.Join(service.Root, "quarantine", backup.ID+".backup")); !os.IsNotExist(err) {
+		if _, err = os.Lstat(filepath.Join(service.Root, "archives", "quarantine", backup.ID+".backup")); !os.IsNotExist(err) {
 			t.Fatalf("purged file still exists: %v", err)
 		}
 	}

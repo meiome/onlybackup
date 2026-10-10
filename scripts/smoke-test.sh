@@ -52,8 +52,8 @@ with open(sys.argv[1], 'wb') as f:
 PY
 bin/onlybackup send --plaintext --url "https://127.0.0.1:$port" --key-file "$run_dir/client.key" --ca-file "$run_dir/tls.crt" --description 'Backup smoke test' "$run_dir/db.sql" >"$run_dir/receipt.json"
 id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$run_dir/receipt.json")
-[[ -f "$run_dir/state/backups/$id.backup" ]] || fail 'Backup non trovato'
-cmp "$run_dir/db.sql" "$run_dir/state/backups/$id.backup"
+[[ -f "$run_dir/state/archives/backups/$id.backup" ]] || fail 'Backup non trovato'
+cmp "$run_dir/db.sql" "$run_dir/state/archives/backups/$id.backup"
 bin/onlybackup-inspect --state "$run_dir/state" status --id "$id" >"$run_dir/status.json"
 bin/onlybackup-recover --state "$run_dir/state" --id "$id" --out "$run_dir/recovered.sql" >"$run_dir/recovery.json"
 cmp "$run_dir/db.sql" "$run_dir/recovered.sql"
@@ -64,7 +64,7 @@ for method in GET DELETE PUT PATCH HEAD; do
 done
 bin/onlybackup-admin --state "$run_dir/state" keys revoke --id "$key_id" >"$run_dir/revoked.json"
 if bin/onlybackup send --quiet --plaintext --url "https://127.0.0.1:$port" --key-file "$run_dir/client.key" --ca-file "$run_dir/tls.crt" --description revocata "$run_dir/db.sql" >"$run_dir/rejected.out" 2>"$run_dir/rejected.err"; then fail 'Chiave revocata accettata'; fi
-[[ -f "$run_dir/state/backups/$id.backup" ]] || fail 'La revoca ha cancellato il backup'
+[[ -f "$run_dir/state/archives/backups/$id.backup" ]] || fail 'La revoca ha cancellato il backup'
 python3 - "$run_dir" <<'PY'
 import json,pathlib,sys
 root=pathlib.Path(sys.argv[1])
@@ -73,7 +73,7 @@ s=json.loads((root/'status.json').read_text())
 assert r['status']=='complete'
 assert s['original_name']=='db.sql'
 assert 'HTTP 401' in (root/'rejected.err').read_text()
-assert len(list((root/'state/backups').iterdir()))==1
+assert len(list((root/'state/archives/backups').iterdir()))==1
 assert not list((root/'state/incoming').iterdir())
 PY
 printf 'OK: HTTPS, upload, SHA-256, catalogo, recupero, nessuna sovrascrittura, API ristrette e revoca.\n'

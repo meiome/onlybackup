@@ -39,7 +39,7 @@ func Admin(args []string, out, errOut io.Writer) error {
 	root := global.String("state", "./var/onlybackup", "directory locale dell'archivio")
 	adminSocket := global.String("admin-socket", "", "socket Unix amministrativa (default: STATE/admin.sock)")
 	global.Usage = func() {
-		fmt.Fprintln(errOut, "Uso: onlybackup-admin [--state DIR] [--admin-socket PATH] init | profiles list/set | keys create/list/revoke/assign | backups list/status | quota | automation setup/status | mail test | retention simulate/minimum/enable/pause/resume | monitoring checks/relearn/anomalies/exclusions/acknowledge/exclude | cancellazione | quarantena\nConfigurazione: automation setup --retention auto|manual (omesso: conserva scelta, auto nei nuovi archivi). Ripresa differita: retention resume --when-ready. Conferma richiesta da stdin o --confirm TESTO.\nLe mutazioni retention richiedono il writer attivo e mantengono conferme e audit anche da SSH, Mosh, pipe o script.")
+		fmt.Fprintln(errOut, "Uso: onlybackup-admin [--state DIR] [--admin-socket PATH] init | migrate-archives | profiles list/set | keys create/list/revoke/assign | backups list/status | quota | automation setup/status | mail test | retention simulate/minimum/enable/pause/resume | monitoring checks/relearn/anomalies/exclusions/acknowledge/exclude | cancellazione | quarantena\nConfigurazione: automation setup --retention auto|manual (omesso: conserva scelta, auto nei nuovi archivi). Ripresa differita: retention resume --when-ready. Conferma richiesta da stdin o --confirm TESTO.\nLe mutazioni retention richiedono il writer attivo e mantengono conferme e audit anche da SSH, Mosh, pipe o script.")
 	}
 	if err := global.Parse(args); err != nil {
 		return err
@@ -58,6 +58,15 @@ func Admin(args []string, out, errOut io.Writer) error {
 		}
 		return Print(out, map[string]string{"state": *root, "status": "initialized",
 			"message": "Retention automatica nativa: alla soglia disco, dopo configurazione mail e controllo valido. Per sospenderla: retention pause."})
+	}
+	if args[0] == "migrate-archives" {
+		if len(args) != 1 {
+			return errors.New("migrate-archives non accetta altri argomenti")
+		}
+		if err := store.MigrateArchives(*root); err != nil {
+			return err
+		}
+		return Print(out, map[string]string{"state": *root, "status": "archives_migrated"})
 	}
 	if *adminSocket == "" {
 		*adminSocket = filepath.Join(*root, "admin.sock")

@@ -6,6 +6,36 @@ are installed on a server. Published versions and their artifacts are listed in
 
 ## Unreleased
 
+- Require Go 1.27.2 to include standard-library security fixes in rebuilt binaries.
+- Bound monitoring coverage by the writer's recorded check start, so long archive
+  scans cannot skip missing-backup alerts that become due during the scan.
+- Preserve actual arrivals when matching appointments and checking sizes during
+  excluded incidents; only model learning omits these observations. The writer
+  continues to suppress only the selected operational anomaly kinds.
+- Page the maintenance backup catalogue over the local socket, retaining deleted
+  history and existing ordering without exceeding the per-response size limit.
+  Failed pages abort the check before a partial catalogue can be used. Upgrade
+  writer and maintenance together; no schema or public protocol change is needed.
+- Resolve maintenance incidents atomically when key revocation cancels pending
+  quarantine or purge requests, allowing retention to resume after a clean check
+  while preserving independent holds and unfinished authorized operations.
+- Store archives in `STATE/archives/{backups,quarantine}` and give maintenance
+  one writable parent mount, fixing cross-mount rename failures under systemd.
+  Existing installations require the offline, resumable `migrate-archives`
+  command and matching binaries/units; directory renames preserve backup bytes,
+  ownership, modes, catalog and pending operations.
+- Allow reconciled provisional retries through only their own maintenance
+  hold, while rechecking current safety rules and preserving all independent
+  holds. Keep physical-operation failures open across intact-source retries. Send one
+  resolution only after verified completion or valid cancellation; clarify
+  physical uncertainty independently without falsely reporting success.
+- Allow long whole-file reconciliation and confirmation requests on both ends
+  of the local maintenance protocol. Full SHA-256 verification is cancellable
+  on shutdown or request cancellation, with lease renewal still active.
+- Test actual systemd mount rules, including an EXDEV reproduction, atomic
+  quarantine/recovery/purge and writer publication; cover migration interruption,
+  collisions, active executors and repeated-error mail behavior.
+
 - Default new archives to automatic retention, held until successful mail proof,
   reliable models and a completed regular check. Add
   `automation setup --retention auto|manual` and report the selected mode during setup.

@@ -34,7 +34,7 @@ The receiver only forwards deposits. The writer owns SQLite and serves separate
 deposit, administrator, and maintenance Unix sockets. Maintenance performs
 checks and mail delivery and is the only service that moves, restores, or
 unlinks completed backups. It never opens SQLite. Its account can access only
-`backups`, `quarantine`, and its small private state directory; the receiver is
+`STATE/archives/backups`, `STATE/archives/quarantine`, and `STATE/maintenance`; the receiver is
 not in that group and cannot traverse the archive.
 
 ## First activation
@@ -251,7 +251,7 @@ midnight. Predictions include growth accumulated since the model's learning
 date; insufficient quota produces an anomaly notice with the available and
 predicted bytes, even when physical disk space is still available.
 
-New automatic requests begin only when the filesystem containing `backups` is
+New automatic requests begin only when the filesystem containing `archives/backups` is
 at least 80.00% physically occupied. At 79.99% nothing is selected. Each cycle
 selects enough of the oldest complete eligible days to release at least 10% of
 the filesystem capacity, or more when required to return below 80% after the
@@ -319,24 +319,51 @@ the schema or rewriting its history. A previously persisted retention block or
 administrative pause is preserved: after a fresh regular check, an explicit
 `retention resume` is still required.
 
-If a physical operation reports an error, its maintenance anomaly blocks
-destructive work. On a later cycle, reconciliation distinguishes a file still
-intact from work already completed and from an uncertain physical state. The
-first two certain outcomes close only that operation's anomaly. After the same
-cycle completes a recent regular monitoring check, OnlyBackup removes the
-matching operation block and may retry without an administrative `resume`.
-An uncertain outcome remains blocked. A manual pause, cancellation, initial
-activation requirement, or another anomaly is never cleared by this recovery.
+If a physical operation reports an error, its `maintenance-operation` anomaly
+blocks new destructive work. An intact source permits retry of the authorized
+operation, but is not evidence of success: the error incident remains open
+until physical completion is confirmed or the operation is validly cancelled.
+A committed operation cannot be cancelled. Reconciliation may resolve an
+`operation-uncertain` incident after verification establishes a certain physical
+state, including an intact source; this does not close the corresponding
+`maintenance-operation` error. Confirmed completion or valid cancellation closes
+only the matching error. After a fresh complete regular monitoring check, its
+operation block may be removed when no other hold remains. Manual pauses,
+other incidents and activation requirements retain their normal recovery.
 Manual pause and its reason are stored independently of automatic blocks.
 Anomaly exclusions, resolutions, regular checks, restarts, and relearning never
 clear it. Only a successful administrative `retention resume`, immediate or
 explicitly requested with `--when-ready`, releases it.
 `automation status` exposes `manual_paused` and `manual_pause_reason`; effective
 `deletion_blocked` remains true while either kind of hold is active.
-This also covers errors reported after the physical change (for example, a
-directory sync failure) and an earlier uncertain result that a later check can
-verify as intact or completed. Both operation-specific failure and uncertainty
-incidents are closed atomically with the reconciled catalogue state.
+This also covers errors after a physical change, such as a directory sync
+failure: verify and confirm the durable physical result before closing the
+operation error. Never label an intact source alone as a resolved operation.
+Before final permission, an intact-source retry is scoped to that operation:
+the writer rechecks the current lease, revision, minima, revocation and upload
+state. The operation's own maintenance error may be bypassed only when it is
+the sole blocking anomaly, a fresh check and reliable current models are
+available, and no administrative or independent hold exists. New operations
+remain blocked. Both ticket issuance and final validation enforce these checks;
+long source verification retains the freshness decision made when issuing the
+ticket. No error-resolution mail is sent until verified completion or valid
+cancellation. After a provisional retry succeeds, the next fresh regular check
+can release its global hold.
+
+Full verification and STOP:
+
+Full SHA-256 verification must be cancellable and must read the complete file;
+large archives must not be accepted using partial hashes. Matching updated
+maintenance client and writer server allow long requests on the
+`/v1/reconcile` and `/v1/confirm` endpoints without the short-request deadline.
+Short maintenance requests retain their two-minute timeout. Lease renewal
+continues during long verification; allowing a long request does not disable
+lease fencing or the exclusive directory lock. STOP cancels ongoing
+verification and its requests, allowing orderly shutdown; interrupted checks
+must not be reported as successful physical confirmation.
+
+Install matching updated writer and maintenance binaries together; older binaries
+retain the short deadline and non-cancellable verification.
 
 Operational anomalies (`upload`, `time`, and `schedule_missing`) are warnings
 on their first occurrence for a key and kind in the rolling 14-day window. The
@@ -353,6 +380,10 @@ seven days. Excluded days neither generate the selected operational findings
 nor contribute observations to model learning. Integrity findings can never be
 excluded.
 
+Actual arrivals in excluded intervals still satisfy their appointments and are
+checked for size anomalies. Excluding one operational kind cannot invent a
+missing backup or hide another kind of anomaly.
+
 Copies are matched chronologically to the earliest compatible free slot, with
 backup ID breaking equal-time ties. Later arrivals cannot replace an earlier
 copy already covering a slot behind a completed monitoring checkpoint. Matching
@@ -360,6 +391,10 @@ includes the observed historical prefix independently of report boundaries;
 arrival checks consider all affected extra copies and retain their original
 event times. Active warning summaries update without duplicating initial mail.
 The SHA-256 scanning frequency is unchanged.
+
+Each check covers appointments only up to its recorded start minus the
+30-minute arrival tolerance. Appointments becoming due during a long archive
+scan remain for the next check, rather than being marked as already checked.
 
 ```bash
 sudo onlybackup-admin --state /var/lib/onlybackup monitoring exclude \
@@ -423,8 +458,11 @@ sudo onlybackup-admin --state /var/lib/onlybackup retention pause \
 ```
 
 Never move or unlink archive files manually. Preserve the entire state,
-including `quarantine`, `maintenance`, SQLite sidecars, permissions, ACLs, and
-the pre-v5 cold copy. A reconciled transient physical-operation error resumes
-automatically after a complete regular check when it is the only block. For
+including `archives/backups`, `archives/quarantine`, `maintenance`, SQLite
+sidecars, permissions, ACLs, and
+the pre-v5 cold copy. An intact source allows retry but leaves a
+`maintenance-operation` error open until physical confirmation or valid
+cancellation. After that, a complete regular check can remove its block if it
+is the only hold; verified uncertainty alone does not close the error. For
 other blocking incidents, wait for a complete regular check and run `retention
 resume`; do not relearn merely to hide an incident.

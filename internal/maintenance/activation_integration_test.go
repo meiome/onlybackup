@@ -40,7 +40,7 @@ func TestDeferredResumeThroughCLIRespectsThresholdAndLaterPause(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = os.WriteFile(filepath.Join(service.Root, "backups", backup.ID+".backup"), data, 0440); err != nil {
+		if err = os.WriteFile(filepath.Join(service.Root, "archives", "backups", backup.ID+".backup"), data, 0440); err != nil {
 			t.Fatal(err)
 		}
 		if err = db.Complete(backup.ID, at); err != nil {

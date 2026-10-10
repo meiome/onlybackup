@@ -115,7 +115,12 @@ func (s *Store) PlanMonitoringCheck(id int64, now time.Time) (model.MonitoringCh
 	if err = tx.QueryRow(`SELECT started_at FROM monitoring_checks ORDER BY id LIMIT 1`).Scan(&firstStartedAt); err != nil {
 		return check, err
 	}
-	coverageEnd := now.Add(-policy.ScheduleTolerance).Unix()
+	// File verification and snapshot loading may take a long time. Cover only
+	// appointments whose tolerance had elapsed when this check started; the
+	// next check will cover arrivals/misses during the scan. Advancing coverage
+	// to planning time would silently skip appointments evaluated with the
+	// maintenance worker's earlier clock and catalogue snapshot.
+	coverageEnd := min(check.StartedAt, now.Unix()) - int64(policy.ScheduleTolerance/time.Second)
 	keys := make([]string, 0, len(modelsByKey))
 	for keyID := range modelsByKey {
 		keys = append(keys, keyID)

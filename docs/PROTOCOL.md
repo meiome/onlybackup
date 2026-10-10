@@ -123,7 +123,7 @@ are removed on the next admission for the same key.
    state and record the attempt.
 2. Exclusively create `incoming/<ID>.part`; copy and verify the content length.
 3. Verify SHA-256, apply mode 0440 for writer and maintenance, synchronize, and close the file.
-4. Hard-link to `backups/<ID>.backup` without replacement and synchronize the
+4. Hard-link to `archives/backups/<ID>.backup` without replacement and synchronize the
    directory.
 5. Remove the temporary file and synchronize the incoming directory.
 6. Set the database state to `complete` and return 201.
@@ -133,3 +133,23 @@ stops between publication and database confirmation, startup reconciliation
 verifies the file and completes the record. If the final file does not exist,
 the record becomes `failed` and the temporary file is removed. Reconciliation
 never deletes final backup files.
+
+## Local maintenance catalogue
+
+On the authenticated maintenance Unix socket, `GET /v1/snapshot?paged=1`
+returns snapshot metadata and at most 1,000 backup records. When present,
+`next_backup_id` and `backups_through` are passed back as `after` and `through`
+on subsequent requests to the same endpoint with `paged=1`. Subsequent responses
+contain only backup records and pagination fields. An absent `next_backup_id`
+marks the final page.
+
+The insertion boundary excludes new deposits created after the first page;
+record IDs provide stable ordering across status changes. All statuses, including
+deleted history, remain included. The client assembles and sorts the complete
+catalogue before using it; a page failure aborts the check. Each response keeps
+the 64 MiB limit. The assembled catalogue still uses memory proportional to its
+record count. This is not a database transaction spanning multiple requests.
+
+Unpaged requests retain their previous behavior for older local clients.
+Install matching updated writer and maintenance binaries to benefit from paging.
+The public upload protocol is unchanged.

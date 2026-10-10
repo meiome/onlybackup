@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/meiome/onlybackup/internal/model"
@@ -31,6 +32,8 @@ type Snapshot struct {
 	Exclusions                   []model.AnomalyExclusion   `json:"anomaly_exclusions"`
 	AcknowledgedMissingBackupIDs []string                   `json:"acknowledged_missing_backup_ids"`
 	Models                       map[string]json.RawMessage `json:"models"`
+	NextBackupID                 string                     `json:"next_backup_id,omitempty"`
+	BackupsThrough               int64                      `json:"backups_through,omitempty"`
 }
 
 type Client struct{ http *http.Client }
@@ -43,6 +46,48 @@ func New(socket string, timeout time.Duration) *Client {
 }
 
 func (c *Client) Do(ctx context.Context, method, path string, request, response any) error {
+	if snapshot, ok := response.(*Snapshot); ok && snapshot != nil && method == "GET" && path == "/v1/snapshot" {
+		return c.readSnapshot(ctx, snapshot)
+	}
+	return c.do(ctx, method, path, request, response)
+}
+
+// Build a complete snapshot only after every bounded page succeeds. A timeout,
+// cancellation or invalid cursor must never expose a partial catalogue to
+// monitoring or retention decisions.
+func (c *Client) readSnapshot(ctx context.Context, target *Snapshot) error {
+	var snapshot Snapshot
+	if err := c.do(ctx, "GET", "/v1/snapshot?paged=1", nil, &snapshot); err != nil {
+		return err
+	}
+	for snapshot.NextBackupID != "" {
+		after := snapshot.NextBackupID
+		if !model.ValidID(after) || snapshot.BackupsThrough <= 0 {
+			return errors.New("cursore catalogo del writer non valido")
+		}
+		var page model.BackupPage
+		path := fmt.Sprintf("/v1/snapshot?paged=1&after=%s&through=%d", after, snapshot.BackupsThrough)
+		if err := c.do(ctx, "GET", path, nil, &page); err != nil {
+			return err
+		}
+		if page.Through != snapshot.BackupsThrough || (page.Next != "" && (!model.ValidID(page.Next) || page.Next <= after)) {
+			return errors.New("pagina catalogo del writer non valida")
+		}
+		snapshot.Backups = append(snapshot.Backups, page.Backups...)
+		snapshot.NextBackupID = page.Next
+	}
+	// Preserve the ordering exposed by the original unpaged snapshot.
+	sort.Slice(snapshot.Backups, func(i, j int) bool {
+		if snapshot.Backups[i].StartedAt == snapshot.Backups[j].StartedAt {
+			return snapshot.Backups[i].ID > snapshot.Backups[j].ID
+		}
+		return snapshot.Backups[i].StartedAt > snapshot.Backups[j].StartedAt
+	})
+	*target = snapshot
+	return nil
+}
+
+func (c *Client) do(ctx context.Context, method, path string, request, response any) error {
 	var body io.Reader
 	if request != nil {
 		data, err := json.Marshal(request)
@@ -59,7 +104,15 @@ func (c *Client) Do(ctx context.Context, method, path string, request, response 
 	if request != nil {
 		r.Header.Set("Content-Type", "application/json")
 	}
-	result, err := c.http.Do(r)
+	client := c.http
+	if path == "/v1/reconcile" || path == "/v1/confirm" {
+		// These authenticated local commands hash whole archives. Their caller's
+		// context governs cancellation; short control calls retain their timeout.
+		longClient := *client
+		longClient.Timeout = 0
+		client = &longClient
+	}
+	result, err := client.Do(r)
 	if err != nil {
 		return err
 	}

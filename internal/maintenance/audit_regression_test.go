@@ -72,7 +72,7 @@ func TestAuditRetentionMinimumSurvivesLearning(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = os.WriteFile(filepath.Join(service.Root, "backups", b.ID+".backup"), data, 0440); err != nil {
+		if err = os.WriteFile(filepath.Join(service.Root, "archives", "backups", b.ID+".backup"), data, 0440); err != nil {
 			t.Fatal(err)
 		}
 		if err = db.Complete(b.ID, at); err != nil {

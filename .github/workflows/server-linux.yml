@@ -42,3 +42,6 @@ jobs:
 
       - name: Test di sistema con binari reali
         run: make system-test
+
+      - name: Test mount systemd reali e regressione EXDEV
+        run: sudo python3 scripts/systemd-layout-test.py
