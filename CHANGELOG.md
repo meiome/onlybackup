@@ -6,6 +6,13 @@ are installed on a server. Published versions and their artifacts are listed in
 
 ## Unreleased
 
+## 0.5.1
+
+This patch fixes the Windows installer. Existing working installations do not
+need to be reinstalled; client/server code, protocol, and stored data formats
+are unchanged from 0.5.0. Upgrades from versions before 0.5.0 still require the
+[server upgrade procedure](docs/INSTALL.md#upgrade).
+
 - Reject files occupying Windows installer directory destinations before creating
   directories or changing permissions, including `receipts` and `encrypted-temp`.
   Resolve relative installation paths against the PowerShell working directory.
