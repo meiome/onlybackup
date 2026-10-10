@@ -6,6 +6,18 @@ are installed on a server. Published versions and their artifacts are listed in
 
 ## Unreleased
 
+## 0.5.0
+
+Existing upload clients remain compatible; updating them is optional. The
+release includes Linux server and Windows client packages built with Go 1.27.2.
+
+Server upgrades require a verified cold copy, all services stopped, the offline
+`migrate-archives` command, and matching updated binaries and systemd units.
+Catalogs from 0.4.1 upgrade from schema v10 to v12 while preserving existing
+retention choices, holds, minima and models. Follow [the upgrade procedure](docs/INSTALL.md#upgrade).
+Use the updated Linux recovery tool for `--state` on the migrated layout;
+receipt/file recovery retains its existing format.
+
 - Require Go 1.27.2 to include standard-library security fixes in rebuilt binaries.
 - Bound monitoring coverage by the writer's recorded check start, so long archive
   scans cannot skip missing-backup alerts that become due during the scan.
@@ -35,7 +47,7 @@ are installed on a server. Published versions and their artifacts are listed in
 - Test actual systemd mount rules, including an EXDEV reproduction, atomic
   quarantine/recovery/purge and writer publication; cover migration interruption,
   collisions, active executors and repeated-error mail behavior.
-
+  Apply the shipped capability limits when the CI probe runs as root.
 - Default new archives to automatic retention, held until successful mail proof,
   reliable models and a completed regular check. Add
   `automation setup --retention auto|manual` and report the selected mode during setup.
