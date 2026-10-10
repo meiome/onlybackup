@@ -10,6 +10,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Resolve-FileSystemPath([string]$Path) {
+    # .NET uses the process working directory, which can differ from $PWD.
+    # Resolve once through PowerShell, without expanding wildcard characters.
+    $provider = $null
+    $drive = $null
+    $resolved = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(
+        $Path, [ref]$provider, [ref]$drive
+    )
+    if ($provider.Name -ne "FileSystem") {
+        throw "Expected a filesystem path: $Path"
+    }
+    return $resolved
+}
+
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
 $adminRole = [System.Security.Principal.WindowsBuiltInRole]::Administrator
@@ -21,7 +35,7 @@ if ($Scope -eq "Machine" -and -not $principal.IsInRole($adminRole)) {
 if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
     $SourceRoot = Split-Path -Parent $PSScriptRoot
 }
-$SourceRoot = [System.IO.Path]::GetFullPath($SourceRoot)
+$SourceRoot = Resolve-FileSystemPath $SourceRoot
 
 if ([string]::IsNullOrWhiteSpace($ProgramDirectory)) {
     if ($Scope -eq "Machine") {
@@ -40,6 +54,9 @@ if ([string]::IsNullOrWhiteSpace($DataDirectory)) {
     }
 }
 
+$ProgramDirectory = Resolve-FileSystemPath $ProgramDirectory
+$DataDirectory = Resolve-FileSystemPath $DataDirectory
+
 $clientSource = Join-Path $SourceRoot "bin\onlybackup.exe"
 $recoverSource = Join-Path $SourceRoot "bin\onlybackup-recover.exe"
 $uploadScriptSource = Join-Path $SourceRoot "scripts\backup-file.ps1"
@@ -51,9 +68,21 @@ foreach ($path in @($clientSource, $recoverSource, $uploadScriptSource)) {
 
 $programBin = Join-Path $ProgramDirectory "bin"
 $programScripts = Join-Path $ProgramDirectory "scripts"
-New-Item -ItemType Directory -Force $programBin | Out-Null
-New-Item -ItemType Directory -Force $programScripts | Out-Null
-New-Item -ItemType Directory -Force $DataDirectory | Out-Null
+$dataChildren = @(
+    (Join-Path $DataDirectory "receipts"),
+    (Join-Path $DataDirectory "encrypted-temp")
+)
+# Reject every directory collision before creating destinations or changing ACLs.
+foreach ($directory in (@($ProgramDirectory, $programBin, $programScripts, $DataDirectory) + $dataChildren)) {
+    if ((Test-Path -LiteralPath $directory) -and
+        -not (Test-Path -LiteralPath $directory -PathType Container)) {
+        throw "Destination exists but is not a directory: $directory"
+    }
+}
+# Unlike New-Item -Force, CreateDirectory throws if the path is a file.
+[void][System.IO.Directory]::CreateDirectory($programBin)
+[void][System.IO.Directory]::CreateDirectory($programScripts)
+[void][System.IO.Directory]::CreateDirectory($DataDirectory)
 
 # Build a protected DACL from scratch. This avoids locale-dependent account
 # names and removes inherited or explicit grants left by a parent directory.
@@ -81,8 +110,8 @@ foreach ($sid in $trustedSids) {
 $directoryAcl.SetOwner($identity.User)
 Set-Acl -LiteralPath $DataDirectory -AclObject $directoryAcl
 
-foreach ($name in @("receipts", "encrypted-temp")) {
-    New-Item -ItemType Directory -Force (Join-Path $DataDirectory $name) | Out-Null
+foreach ($directory in $dataChildren) {
+    [void][System.IO.Directory]::CreateDirectory($directory)
 }
 
 # Existing children must inherit only the protected parent DACL. Never disable
@@ -103,9 +132,31 @@ Copy-Item -LiteralPath $recoverSource `
 Copy-Item -LiteralPath $uploadScriptSource `
     -Destination (Join-Path $programScripts "backup-file.ps1") -Force
 
-& (Join-Path $programBin "onlybackup.exe") --help *> $null
-if ($LASTEXITCODE -ne 0) {
-    throw "The installed OnlyBackup client did not start successfully."
+# Windows PowerShell 5.1 turns redirected native stderr into error records.
+# --help intentionally writes to stderr even on success, so inspect the process
+# exit code directly and drain both streams without PowerShell redirection.
+$probe = [System.Diagnostics.Process]::new()
+try {
+    $probe.StartInfo.FileName = Join-Path $programBin "onlybackup.exe"
+    $probe.StartInfo.Arguments = "--help"
+    $probe.StartInfo.UseShellExecute = $false
+    $probe.StartInfo.CreateNoWindow = $true
+    $probe.StartInfo.RedirectStandardOutput = $true
+    $probe.StartInfo.RedirectStandardError = $true
+    if (-not $probe.Start()) {
+        throw "The installed OnlyBackup client did not start successfully."
+    }
+    $stdout = $probe.StandardOutput.ReadToEndAsync()
+    $stderr = $probe.StandardError.ReadToEndAsync()
+    $probe.WaitForExit()
+    $null = $stdout.Result
+    $null = $stderr.Result
+    if ($probe.ExitCode -ne 0) {
+        throw "The installed OnlyBackup client did not start successfully (exit code $($probe.ExitCode))."
+    }
+}
+finally {
+    $probe.Dispose()
 }
 
 Write-Output "OnlyBackup client installation completed."

@@ -6,6 +6,14 @@ are installed on a server. Published versions and their artifacts are listed in
 
 ## Unreleased
 
+- Reject files occupying Windows installer directory destinations before creating
+  directories or changing permissions, including `receipts` and `encrypted-temp`.
+  Resolve relative installation paths against the PowerShell working directory.
+
+- Fix Windows PowerShell 5.1 installation failing when the client's successful
+  `--help` probe writes to stderr. Check the process exit code directly and run
+  installer regression tests in both Windows PowerShell 5.1 and PowerShell 7.
+
 ## 0.5.0
 
 Existing upload clients remain compatible; updating them is optional. The

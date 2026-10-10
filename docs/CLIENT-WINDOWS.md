@@ -130,6 +130,9 @@ Verify the installation:
 The installer creates the private configuration directory before any secret is
 copied. It builds a protected ACL containing only the current user, LocalSystem,
 and local Administrators, then repairs inheritance on existing children.
+Before making changes, it rejects files occupying the program or configuration
+directory, `bin`, `scripts`, `receipts`, or `encrypted-temp`. Relative paths are
+resolved against the current PowerShell directory.
 
 For diagnosis, the three grants below are the ones enforced by the installer.
 They may also be applied to a newly created, empty configuration directory:
@@ -170,8 +173,10 @@ Administrators. The client rejects a credential whose owner or DACL grants
 access to another account. After verifying the client copy, remove every
 transferable credential copy from staging directories and from the server.
 
-The installer is parsed and exercised on Windows Server 2022 in CI, including a
-read/write check through the resulting private child ACLs.
+The installer is exercised on Windows Server 2022 in CI with both Windows
+PowerShell 5.1 and PowerShell 7, including a read/write check through the
+resulting private child ACLs, reinstallation, relative paths, and rejection of
+directory collisions without changing existing files or their permissions.
 
 ## 4. Keep the age identity off an upload-only server
 
