@@ -6,6 +6,15 @@ are installed on a server. Published versions and their artifacts are listed in
 
 ## Unreleased
 
+## 0.5.2
+
+This patch reduces maintenance load on large archives and rebuilds all binaries
+with Go 1.27.3 for a standard-library security fix. Protocol and catalogue
+formats are unchanged from 0.5.1. Replace all binaries together and install the
+updated `deploy/onlybackup-maintenance.service`, then run
+`systemctl daemon-reload` before restarting maintenance. The first cycle after
+the upgrade hashes every archived file once to build the verification cache.
+
 - Stop maintenance from re-hashing the whole archive on every five-minute
   cycle. Unchanged files are trusted from a verification cache keyed on file
   identity; new or changed files are hashed at once and a rolling scrub
