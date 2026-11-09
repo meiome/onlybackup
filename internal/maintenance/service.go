@@ -39,6 +39,11 @@ type Service struct {
 	Now        func() time.Time
 	Filesystem func(string) (policy.Filesystem, error)
 	Mail       Sender
+	// ScrubPeriod bounds the age of monitoring verifications (default 7 days).
+	ScrubPeriod time.Duration
+	// CycleInterval is the expected time between cycles, used to size the
+	// per-cycle scrub budget (default five minutes).
+	CycleInterval time.Duration
 }
 
 const (
@@ -382,33 +387,53 @@ func (s *Service) fileFindingsContext(ctx context.Context, snapshot localclient.
 	for _, backupID := range snapshot.AcknowledgedMissingBackupIDs {
 		acknowledgedMissing[backupID] = true
 	}
+	var candidates []verifyCandidate
 	for _, backup := range snapshot.Backups {
-		if ctx.Err() != nil {
-			return findings
-		}
-		var path string
+		var relative string
 		switch backup.Status {
 		case model.BackupReceiving:
 			expected["backups/"+backup.ID+".backup"] = backup.ID
 			continue
 		case model.BackupComplete, model.BackupDeleting:
-			path = filepath.Join(s.Root, "archives", "backups", backup.ID+".backup")
-			expected["backups/"+backup.ID+".backup"] = backup.ID
+			relative = "backups/" + backup.ID + ".backup"
 		case model.BackupQuarantined, model.BackupPurging:
-			path = filepath.Join(s.Root, "archives", "quarantine", backup.ID+".backup")
-			expected["quarantine/"+backup.ID+".backup"] = backup.ID
+			relative = "quarantine/" + backup.ID + ".backup"
 		default:
 			continue
 		}
-		if _, err := os.Lstat(path); os.IsNotExist(err) {
+		expected[relative] = backup.ID
+		candidates = append(candidates, verifyCandidate{key: relative, path: filepath.Join(s.Root, "archives", filepath.FromSlash(relative)), backup: backup})
+	}
+	verifier := s.newFileVerifier(candidates)
+	// New or changed files first, so fresh uploads are checked promptly
+	// even if the cycle is interrupted during a long scrub.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		_, iCached := verifier.cache.Entries[candidates[i].key]
+		_, jCached := verifier.cache.Entries[candidates[j].key]
+		return !iCached && jCached
+	})
+	for _, candidate := range candidates {
+		if ctx.Err() != nil {
+			return findings
+		}
+		backup := candidate.backup
+		if _, err := os.Lstat(candidate.path); os.IsNotExist(err) {
 			if !acknowledgedMissing[backup.ID] {
 				findings = append(findings, policy.Finding{StableKey: "file-missing:" + backup.ID, Kind: "file_missing", KeyID: backup.KeyID, BackupID: backup.ID, Detail: "file registrato nel catalogo ma fisicamente assente"})
 			}
 			continue
-		} else if err != nil || !validFileContext(ctx, path, backup) {
+		} else if err != nil || !verifier.valid(ctx, candidate.key, candidate.path, backup) {
+			if ctx.Err() != nil {
+				return findings
+			}
 			findings = append(findings, policy.Finding{StableKey: "catalog-file:" + backup.ID, Kind: "catalog", KeyID: backup.KeyID, BackupID: backup.ID, Detail: "catalogo e file non concordano"})
 		}
 	}
+	keep := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		keep[candidate.key] = true
+	}
+	verifier.prune(keep)
 	for _, directory := range []string{"backups", "quarantine"} {
 		entries, err := os.ReadDir(filepath.Join(s.Root, "archives", directory))
 		if err != nil {
@@ -441,6 +466,7 @@ func (s *Service) verifyUnexpectedFilesContext(ctx context.Context, findings []p
 		}
 	}
 	result := findings[:0]
+	var verifier *fileVerifier
 	for _, finding := range findings {
 		if ctx.Err() != nil {
 			return result
@@ -456,7 +482,10 @@ func (s *Service) verifyUnexpectedFilesContext(ctx context.Context, findings []p
 			result = append(result, finding)
 			continue
 		}
-		if !validFileContext(ctx, filepath.Join(s.Root, "archives", filepath.FromSlash(relative)), backup) {
+		if verifier == nil {
+			verifier = s.newFileVerifier(nil)
+		}
+		if !verifier.valid(ctx, relative, filepath.Join(s.Root, "archives", filepath.FromSlash(relative)), backup) {
 			result = append(result, finding)
 		}
 	}
@@ -915,7 +944,7 @@ func validFileContext(ctx context.Context, path string, backup model.Backup) boo
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != backup.Size {
 		return false
 	}
-	return backupfile.VerifyContext(ctx, path, backup.Size, backup.SHA256) == nil
+	return hashFile(ctx, path, backup.Size, backup.SHA256) == nil
 }
 
 func renameNoReplace(source, destination string) error {

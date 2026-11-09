@@ -14,6 +14,11 @@ ExecStart=/usr/local/bin/onlybackup-maintenance --state /var/lib/onlybackup --so
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=25
+# Integrity scrubbing yields disk and CPU to co-hosted services.
+Nice=10
+CPUWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=

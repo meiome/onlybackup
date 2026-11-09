@@ -105,6 +105,17 @@ check with reliable models; every independent hold and current policy check
 remains effective. This does not release retention for other operations.
 See the retention guide before restarting a stuck cycle.
 
+Monitoring cycles (`--interval`, default 5 minutes) do not re-hash unchanged
+archive files. Maintenance records each verified file's size, device, inode,
+mtime and ctime in `STATE/maintenance/verify-cache.json`; a file is hashed again
+when it is new, when its identity or catalog digest changes, or when its last
+verification passes half of `--scrub-period` (default `168h`). The rolling
+scrub re-verifies the oldest files within a per-cycle byte budget, sized so the
+whole archive is covered within the period even on hosts powered part of the
+day. Deleting the cache only forces one full pass. Quarantine, recovery and
+purge never use the cache: they always hash the file before acting. The unit
+runs maintenance at low CPU and I/O priority.
+
 SHA-256 verification is complete and cancellable. Both
 maintenance client and server allow long `/v1/reconcile` and `/v1/confirm`
 requests; short requests remain limited to two minutes. Lease renewal continues
