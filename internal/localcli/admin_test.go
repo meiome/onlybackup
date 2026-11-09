@@ -3,6 +3,7 @@ package localcli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,5 +115,35 @@ func TestGuidedDeletionAcceptsPipedRemoteInput(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("la richiesta da pipe in sessione SSH non e stata inoltrata")
+	}
+}
+
+func TestLookupCommandsReportMissingFlagsAndUnknownIDs(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	var out, errs bytes.Buffer
+	if err := Admin([]string{"--state", root, "init"}, &out, &errs); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		run  func([]string, io.Writer, io.Writer) error
+		args []string
+		want string
+	}{
+		{"admin status senza id", Admin, []string{"backups", "status"}, "backups status richiede --id"},
+		{"admin quota senza key", Admin, []string{"quota"}, "quota richiede --key"},
+		{"admin status sconosciuto", Admin, []string{"backups", "status", "--id", "missing"}, "backup non trovato"},
+		{"admin quota sconosciuta", Admin, []string{"quota", "--key", "missing"}, "chiave non trovata"},
+		{"inspect status senza id", Inspect, []string{"status"}, "status richiede --id"},
+		{"inspect quota senza key", Inspect, []string{"quota"}, "quota richiede --key"},
+		{"inspect status sconosciuto", Inspect, []string{"status", "--id", "missing"}, "backup non trovato"},
+		{"inspect quota sconosciuta", Inspect, []string{"quota", "--key", "missing"}, "chiave non trovata"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.run(append([]string{"--state", root}, test.args...), &out, &errs)
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("errore %v, atteso %q", err, test.want)
+			}
+		})
 	}
 }

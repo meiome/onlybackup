@@ -1,6 +1,7 @@
 package localcli
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -32,6 +33,23 @@ func parse(f *flag.FlagSet, args []string) error {
 		return fmt.Errorf("argomenti inattesi: %v", f.Args())
 	}
 	return nil
+}
+
+// required reports a missing mandatory flag instead of letting an empty ID
+// reach SQLite and surface as "sql: no rows in result set".
+func required(value, command, flagName string) error {
+	if value == "" {
+		return fmt.Errorf("%s richiede --%s", command, flagName)
+	}
+	return nil
+}
+
+// notFound translates a lookup miss into an operator-facing message.
+func notFound(err error, message string) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New(message)
+	}
+	return err
 }
 
 func Admin(args []string, out, errOut io.Writer) error {
@@ -218,9 +236,12 @@ func Admin(args []string, out, errOut io.Writer) error {
 			if err := parse(f, args[2:]); err != nil {
 				return err
 			}
+			if err := required(*id, "backups status", "id"); err != nil {
+				return err
+			}
 			b, err := s.Backup(*id)
 			if err != nil {
-				return err
+				return notFound(err, "backup non trovato")
 			}
 			return Print(out, b)
 		}
@@ -231,9 +252,12 @@ func Admin(args []string, out, errOut io.Writer) error {
 		if err := parse(f, args[1:]); err != nil {
 			return err
 		}
+		if err := required(*id, "quota", "key"); err != nil {
+			return err
+		}
 		q, err := s.Quota(*id, time.Now())
 		if err != nil {
-			return err
+			return notFound(err, "chiave non trovata")
 		}
 		return Print(out, q)
 	}

@@ -28,7 +28,7 @@ maintenance <---------------- maintenance socket -----'
 
 ## Build and test from source
 
-Building requires Linux, Go 1.27.2 or later, and GCC.
+Building requires Linux, Go 1.27.3 or later, and GCC.
 
 ```bash
 make build

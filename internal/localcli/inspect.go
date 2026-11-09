@@ -50,9 +50,12 @@ func Inspect(args []string, out, errOut io.Writer) error {
 		if err := parse(f, args[1:]); err != nil {
 			return err
 		}
+		if err := required(*id, "status", "id"); err != nil {
+			return err
+		}
 		b, err := s.Backup(*id)
 		if err != nil {
-			return err
+			return notFound(err, "backup non trovato")
 		}
 		return Print(out, b)
 	case "quota":
@@ -61,9 +64,12 @@ func Inspect(args []string, out, errOut io.Writer) error {
 		if err := parse(f, args[1:]); err != nil {
 			return err
 		}
+		if err := required(*key, "quota", "key"); err != nil {
+			return err
+		}
 		q, err := s.Quota(*key, time.Now())
 		if err != nil {
-			return err
+			return notFound(err, "chiave non trovata")
 		}
 		return Print(out, q)
 	}

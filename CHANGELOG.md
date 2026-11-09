@@ -6,6 +6,18 @@ are installed on a server. Published versions and their artifacts are listed in
 
 ## Unreleased
 
+- Stop maintenance from re-hashing the whole archive on every five-minute
+  cycle. Unchanged files are trusted from a verification cache keyed on file
+  identity; new or changed files are hashed at once and a rolling scrub
+  re-verifies every file within `--scrub-period` (default 7 days) under a
+  per-cycle budget. Destructive operations still hash before acting. The
+  maintenance unit now runs at low CPU and I/O priority.
+- Require Go 1.27.3 so rebuilt binaries include the `crypto/x509` fix for
+  GO-2026-6809, reachable from maintenance SMTP delivery over TLS.
+- `onlybackup-admin backups status`, `onlybackup-admin quota` and the matching
+  `onlybackup-inspect` commands now report a missing `--id`/`--key` or an
+  unknown ID instead of `sql: no rows in result set`.
+
 ## 0.5.1
 
 This patch fixes the Windows installer. Existing working installations do not
