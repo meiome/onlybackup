@@ -1,6 +1,7 @@
 # OnlyBackup
 
-OnlyBackup is a production-ready, **deposit-only** backup server for Linux.
+OnlyBackup is a **deposit-only** backup server for Linux, with native Linux and
+Windows clients.
 Clients can upload new files, but the public API cannot read, modify, or delete
 them.
 
@@ -17,18 +18,15 @@ maintenance <---------------- maintenance socket -----'
     `-> monitoring, SMTP, quarantine/recovery/purge
 ```
 
-> **Status:** the deposit path is running in production. Retention changes in
-> this repository must be checked against the installed version; local tests do
-> not establish that they have been released or deployed. The archive layout and
-> maintenance changes below require matching updated binaries and systemd units;
-> the repository implements them, but does not update an installed server.
-> Linux CI on pushes to `main` and pull requests runs `make check`, `make race`,
-> `make smoke`, `make system-test`, and the systemd mount regression test. The release workflow runs `make check`
-> and `make race`; isolation and database restore checks require separate runs.
+> **Status:** OnlyBackup has been used in production on Debian 13 since
+> September 2026. The deposit path, protocol and archive format are stable
+> within the 0.5 series; automatic retention is newer and documented in detail
+> in the [retention guide](docs/RETENTION.md). Upgrades replace all binaries and
+> systemd units together; see the [upgrade procedure](docs/INSTALL.md#upgrade).
 
 ## Build and test from source
 
-Building requires Linux, Go 1.27.3 or later, and GCC.
+Building requires Linux, Go 1.27.4 or later, and GCC.
 
 ```bash
 make build

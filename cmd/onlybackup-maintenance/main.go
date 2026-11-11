@@ -75,6 +75,9 @@ func run(args []string) error {
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 		fmt.Fprintln(os.Stderr, "Errore:", err)
 		os.Exit(1)
 	}

@@ -249,6 +249,9 @@ func listenPrivileged(path, group string, allow func(localapi.Peer) bool) (net.L
 }
 func main() {
 	if err := run(); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 		fmt.Fprintln(os.Stderr, "Errore:", err)
 		os.Exit(1)
 	}
