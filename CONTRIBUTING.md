@@ -23,9 +23,11 @@ For filesystem permissions or service isolation changes, also run
 changes, run `make mysql-test`; see [the restore guide](docs/RESTORE-TEST.md).
 Windows CI tests the native clients, installer, and private file ACLs.
 
-Linux CI runs check, race, smoke, and system tests on pushes to `main` and pull
-requests. Adding a workflow does not make its checks mandatory for merging;
-repository branch rules are configured separately.
+Linux CI runs `make check`, `make race`, `make smoke`, `make system-test`, and
+the systemd mount regression test on pushes to `main` and pull requests. The
+release workflow runs `make check` and `make race`; isolation and database
+restore tests require separate runs. Adding a workflow does not make its checks
+mandatory for merging; repository branch rules are configured separately.
 
 ## Proposing a change
 

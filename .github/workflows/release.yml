@@ -109,6 +109,12 @@ jobs:
             exit 1
           fi
 
+      - name: Prepara le note dal CHANGELOG
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          scripts/release-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release/notes.md"
+
       - name: Test e analisi statica
         run: make check
 
@@ -135,5 +141,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME"
           dist/*.tar.gz dist/*.zip dist/SHA256SUMS
           --verify-tag
+          --notes-file "$RUNNER_TEMP/release/notes.md"
           --generate-notes
           --title "OnlyBackup $GITHUB_REF_NAME"

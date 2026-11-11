@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose an improvement or new capability.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        OnlyBackup keeps a deposit-only public API: clients cannot read, modify
+        or delete stored backups. Proposals that weaken this boundary or service
+        isolation are unlikely to be accepted.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what prevents it today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

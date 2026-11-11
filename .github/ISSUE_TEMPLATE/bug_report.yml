@@ -1,0 +1,64 @@
+name: Bug report
+description: Report incorrect behavior in the server, clients or scripts.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove credentials, private keys, personal data and sensitive archive
+        metadata from everything you paste. For a suspected vulnerability, use
+        private reporting as described in SECURITY.md instead of this form.
+  - type: input
+    id: version
+    attributes:
+      label: OnlyBackup version
+      description: Release tag or commit, for example v0.5.3.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Server (writer, receiver, maintenance)
+        - Admin or inspect tools
+        - Linux client
+        - Windows client or installer
+        - Recovery tool
+        - Retention or monitoring
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: For example Debian 13 x86_64 or Windows Server 2022.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal commands using synthetic data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Output of the command or journalctl, with secrets removed.
+      render: text
