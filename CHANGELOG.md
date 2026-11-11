@@ -6,6 +6,25 @@ are installed on a server. Published versions and their artifacts are listed in
 
 ## Unreleased
 
+## 0.5.3
+
+This patch rebuilds all binaries with Go 1.27.4 for a standard-library security
+fix and publishes them from a tag whose commit, binaries and build attestation
+all match. Protocol, catalogue and archive formats and the systemd units are
+unchanged from 0.5.2: replace all binaries together and restart the services.
+
+- Require Go 1.27.4 so rebuilt binaries include the `net/http` fix for
+  GO-2026-6859, an HTTP/1 server crash reachable from the receiver and writer.
+- `--help` on `onlybackup-writer`, `onlybackup-receiver`,
+  `onlybackup-maintenance` and `onlybackup-recover` now prints usage and exits
+  with status 0 instead of reporting `Errore: flag: help requested`.
+- Release notes are taken from this changelog; the release workflow stops
+  before building if the tagged version has no entry.
+- Add a code of conduct, issue and pull request templates, and Dependabot
+  updates for Go modules and GitHub Actions.
+- Clarify the project status in the README and move CI details to
+  CONTRIBUTING.
+
 ## 0.5.2
 
 This patch reduces maintenance load on large archives and rebuilds all binaries
