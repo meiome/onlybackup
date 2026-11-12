@@ -1,9 +1,18 @@
 # OnlyBackup
 
+[![Server Linux](https://github.com/meiome/onlybackup/actions/workflows/server-linux.yml/badge.svg?branch=main)](https://github.com/meiome/onlybackup/actions/workflows/server-linux.yml)
+[![Client Windows](https://github.com/meiome/onlybackup/actions/workflows/client-windows.yml/badge.svg?branch=main)](https://github.com/meiome/onlybackup/actions/workflows/client-windows.yml)
+[![Release](https://img.shields.io/github/v/release/meiome/onlybackup)](https://github.com/meiome/onlybackup/releases/latest)
+[![License: AGPL-3.0](https://img.shields.io/github/license/meiome/onlybackup)](LICENSE)
+
 OnlyBackup is a **deposit-only** backup server for Linux, with native Linux and
 Windows clients.
+
 Clients can upload new files, but the public API cannot read, modify, or delete
-them.
+them. A compromised client or a stolen upload credential can add backups, but
+cannot use the API to read, alter or remove the ones already stored.
+
+## How it works
 
 Transfers use HTTPS with TLS 1.3. The client normally encrypts content with
 [age](https://age-encryption.org/) before upload; storing plaintext requires an
@@ -18,31 +27,50 @@ maintenance <---------------- maintenance socket -----'
     `-> monitoring, SMTP, quarantine/recovery/purge
 ```
 
+A separate maintenance service monitors expected backups, sends mail reports
+and, once enabled, applies retention when the disk fills up. Destructive
+operations require durable, verified permissions; see the
+[retention guide](docs/RETENTION.md).
+
 > **Status:** OnlyBackup has been used in production on Debian 13 since
 > September 2026. The deposit path, protocol and archive format are stable
 > within the 0.5 series; automatic retention is newer and documented in detail
 > in the [retention guide](docs/RETENTION.md). Upgrades replace all binaries and
 > systemd units together; see the [upgrade procedure](docs/INSTALL.md#upgrade).
 
-## Build and test from source
+## Quick start
 
-Building requires Linux, Go 1.27.4 or later, and GCC.
+1. Download a release and verify it as described in
+   [Verifiable releases](#verifiable-releases).
+2. Install the server by following the [installation guide](docs/INSTALL.md).
+   It covers users, systemd units, TLS, profiles and deposit credentials.
+3. Set up a [Debian](docs/CLIENT-DEBIAN.md) or
+   [Windows](docs/CLIENT-WINDOWS.md) client. A client configuration looks like
+   this:
 
-```bash
-make build
-make check
-make smoke
-```
+   ```json
+   {
+     "url": "https://backup.example.com:8443",
+     "key_file": "send.key",
+     "encrypt_to": "age1..."
+   }
+   ```
 
-`make smoke` starts a temporary HTTPS environment, uploads and recovers a
-backup, checks its integrity and the rejection of forbidden API operations,
-then removes the test data.
+4. Send a file:
 
-To build the two native Windows AMD64 clients in `bin/windows-amd64`:
+   ```bash
+   onlybackup send --config client.json \
+     --description "Daily accounting backup" backup.sql
+   ```
 
-```bash
-make windows-client
-```
+The command returns a JSON receipt only after the server verifies and stores the
+backup. Use `--plaintext` only when you intentionally want the server to store
+readable content. OnlyBackup accepts files that have already been prepared; use
+[scripts/backup-mysql.sh](scripts/backup-mysql.sh) to create MySQL dumps.
+
+Upgrading from a version before 0.5.0 requires an offline archive migration
+with all services stopped; follow the
+[upgrade procedure](docs/INSTALL.md#upgrade).
 
 ## Verifiable releases
 
@@ -64,6 +92,12 @@ gh attestation verify onlybackup_VERSION_linux_amd64.tar.gz \
   --repo meiome/onlybackup
 ```
 
+Require an explicit `OK` line for the downloaded Linux archive. The checksum
+file also lists the Windows archive, which need not be present. The checksum
+detects accidental changes. The attestation links the archive to the workflow
+and commit that produced it; it is not a guarantee that the software has no
+vulnerabilities.
+
 On Windows, verify `onlybackup_VERSION_windows_amd64.zip` in the same way. The
 complete PowerShell commands are in the
 [Windows client guide](docs/CLIENT-WINDOWS.md).
@@ -75,62 +109,9 @@ tar -xzf onlybackup_VERSION_linux_amd64.tar.gz
 cd onlybackup_VERSION_linux_amd64
 ```
 
-Require an explicit `OK` line for the downloaded Linux archive. The checksum
-file also lists the Windows archive, which need not be present. The checksum
-detects accidental changes. The attestation links the archive to
-the workflow and commit that produced it; it is not a guarantee that the
-software has no vulnerabilities.
-
-## Install and use
-
-For a new server, upgrade, or migration, follow the single
-[installation guide](docs/INSTALL.md). Separate guides cover
-[Debian clients](docs/CLIENT-DEBIAN.md) and
-[native Windows clients](docs/CLIENT-WINDOWS.md), including Bash and PowerShell
-automation. Use the [operations runbook](docs/OPERATIONS.md) for recurring work
-and the [retention guide](docs/RETENTION.md) for monitoring, mail, simulation,
-quarantine, recovery, and persistent anomaly blocks.
-
-The required filesystem layout is `STATE/archives/{backups,quarantine}`.
-The `archives` parent is owned by writer, grouped to maintenance, mode `0710`;
-its children are `0770` (`0700` for parent and children in single-user use).
-Maintenance gets `ReadWritePaths=STATE/archives STATE/maintenance`; writer
-keeps the whole `STATE` writable without separate mounts for its children.
-The catalog, SQLite sidecars and `incoming` remain inaccessible to maintenance.
-An old layout must be migrated offline with all three services stopped:
-
-```bash
-sudo -u onlybackup-writer onlybackup-admin --state /var/lib/onlybackup migrate-archives
-```
-
-This resumable command renames directories without copying files or changing
-their inodes, owners, modes, catalog or operation records. Writer refuses the
-old layout with migration instructions; it never migrates automatically.
-Follow the [coordinated upgrade and rollback procedure](docs/INSTALL.md#upgrade).
-
-A client configuration looks like this:
-
-```json
-{
-  "url": "https://backup.example.com:8443",
-  "key_file": "send.key",
-  "encrypt_to": "age1..."
-}
-```
-
-```bash
-onlybackup send --config client.json \
-  --description "Daily accounting backup" backup.sql
-```
-
-The command returns a JSON receipt only after the server verifies and stores the
-backup. Use `--plaintext` only when you intentionally want the server to store
-readable content. OnlyBackup accepts files that have already been prepared; use
-[scripts/backup-mysql.sh](scripts/backup-mysql.sh) to create MySQL dumps.
-
 ## Documentation
 
-- [Installation and migration](docs/INSTALL.md)
+- [Installation, upgrade and migration](docs/INSTALL.md)
 - [Debian client](docs/CLIENT-DEBIAN.md)
 - [Native Windows client](docs/CLIENT-WINDOWS.md)
 - [Production operations](docs/OPERATIONS.md)
@@ -141,19 +122,26 @@ readable content. OnlyBackup accepts files that have already been prepared; use
 - [Contributing](CONTRIBUTING.md)
 - [Release changes](CHANGELOG.md)
 
-New archives default to automatic retention after mail proof, learning and a
-valid check. At 80% physical disk use, cleanup selects the oldest eligible
-copies. `retention pause` persists a manual pause;
-`retention resume --when-ready` requests a single release after a valid check.
-Activation, pauses and deferred requests are stored in `metadata.db`.
+## Build and test from source
 
-Retention grants durable permission for one physical operation at final
-validation. Revocation blocks new permissions but does not cancel committed
-work; quarantine and purge need separate permissions. Manual pause and its reason
-persist independently of automatic blocks and require an explicit successful
-administrative resume. Administrator-configured per-key retention minima are
-checked before each new destructive permission. These changes require schema
-v12 and matching binaries; verify the installed version before relying on them.
-See the retention guide for recovery after a crash and the remaining safety limits.
+Building requires Linux, Go 1.27.4 or later, and GCC.
+
+```bash
+make build
+make check
+make smoke
+```
+
+`make smoke` starts a temporary HTTPS environment, uploads and recovers a
+backup, checks its integrity and the rejection of forbidden API operations,
+then removes the test data.
+
+To build the two native Windows AMD64 clients in `bin/windows-amd64`:
+
+```bash
+make windows-client
+```
+
+## License
 
 Licensed under the [GNU AGPL-3.0](LICENSE).
