@@ -953,6 +953,20 @@ func blockForAnomalyTx(tx *sql.Tx, detail string) error {
 	return err
 }
 
+// resolutionMailBody names the closed incident and adds the resume instruction
+// only when no other blocking incident remains: resume would be refused then.
+func resolutionMailBody(headline, stableKey string, now time.Time, tx *sql.Tx) (string, error) {
+	remaining, err := blockingAnomalyCountTx(tx, now)
+	if err != nil {
+		return "", err
+	}
+	body := headline + " (" + stableKey + ")."
+	if remaining == 0 {
+		body += "\n" + model.ResumeHint
+	}
+	return body, nil
+}
+
 func blockingAnomalyCountTx(tx *sql.Tx, now time.Time) (int, error) {
 	var count int
 	err := tx.QueryRow(`SELECT COUNT(*) FROM anomalies a WHERE a.resolved_at=0
@@ -1063,7 +1077,14 @@ func (s *Store) ResolveAnomaly(stableKey string, now time.Time) (bool, error) {
 		}
 	}
 	mailID := fmt.Sprintf("resolved:%s:%d", stableKey, now.Unix())
-	if _, err = tx.Exec(`INSERT INTO mail_queue(stable_id,kind,subject,body,created_at,next_attempt_at) VALUES(?,'resolution','OnlyBackup: anomalia risolta',?,?,?)`, mailID, stableKey, now.Unix(), now.Unix()); err != nil {
+	mailBody := stableKey
+	if !policy.IsQuarantineMarginWarning(kind, stableKey) {
+		mailBody, err = resolutionMailBody("Anomalia chiusa", stableKey, now, tx)
+		if err != nil {
+			return false, err
+		}
+	}
+	if _, err = tx.Exec(`INSERT INTO mail_queue(stable_id,kind,subject,body,created_at,next_attempt_at) VALUES(?,'resolution','OnlyBackup: anomalia risolta',?,?,?)`, mailID, mailBody, now.Unix(), now.Unix()); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
@@ -1183,7 +1204,11 @@ func (s *Store) AcknowledgeMissingAnomaly(id int64, now time.Time) error {
 		return err
 	}
 	mailID := fmt.Sprintf("acknowledged:%s:%d", stableKey, now.Unix())
-	if _, err = tx.Exec(`INSERT INTO mail_queue(stable_id,kind,subject,body,created_at,next_attempt_at) VALUES(?,'resolution','OnlyBackup: copia mancante riconosciuta',?,?,?)`, mailID, stableKey, now.Unix(), now.Unix()); err != nil {
+	body, err := resolutionMailBody("Copia mancante riconosciuta", stableKey, now, tx)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`INSERT INTO mail_queue(stable_id,kind,subject,body,created_at,next_attempt_at) VALUES(?,'resolution','OnlyBackup: copia mancante riconosciuta',?,?,?)`, mailID, body, now.Unix(), now.Unix()); err != nil {
 		return err
 	}
 	return tx.Commit()
