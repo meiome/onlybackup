@@ -9,6 +9,11 @@ const (
 	ConfirmRetentionResumeWhenReady = "PRENOTA"
 )
 
+// ResumeHint tells the administrator what to run when a resolved incident left
+// deletion suspended. It is shown in the resolution mail and in the output of
+// monitoring acknowledge/exclude, so the required step is never silent.
+const ResumeHint = "Cancellazione sospesa: esegui onlybackup-admin retention resume (con controllo recente regolare) per riattivarla. Nessuna cancellazione parte finché non lo esegui."
+
 func ConfirmAutomationSetup(mode string) string {
 	switch mode {
 	case "auto":

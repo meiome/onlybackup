@@ -226,7 +226,11 @@ func retentionAdmin(args []string, root, adminSocket string, out, errOut io.Writ
 			if err := call("POST", "/v1/monitoring/acknowledge", map[string]int64{"id": *id}, &response); err != nil {
 				return true, err
 			}
-			return true, Print(out, response)
+			if err := Print(out, response); err != nil {
+				return true, err
+			}
+			printResumeHint(call, errOut)
+			return true, nil
 		case "exclude":
 			f := flags("monitoring exclude", errOut)
 			id := f.Int64("id", 0, "ID anomalia originaria")
@@ -256,7 +260,11 @@ func retentionAdmin(args []string, root, adminSocket string, out, errOut io.Writ
 			if err = call("POST", "/v1/monitoring/exclude", request, &response); err != nil {
 				return true, err
 			}
-			return true, Print(out, response)
+			if err = Print(out, response); err != nil {
+				return true, err
+			}
+			printResumeHint(call, errOut)
+			return true, nil
 		default:
 			return true, errors.New("comando monitoring sconosciuto")
 		}
@@ -566,4 +574,22 @@ func simulateRetention(call func(string, string, any, any) error, root string, o
 		return err
 	}
 	return Print(out, selection)
+}
+
+// printResumeHint writes the required resume step to errOut, never to the JSON
+// on stdout. It shows the step only when the suspension is the one that
+// retention resume releases: suspended, enabled, mail tested, not already
+// booked, and no active anomaly left. A failed status read cannot undo the
+// action that already succeeded, so it is reported and otherwise ignored.
+func printResumeHint(call func(method, path string, request, response any) error, errOut io.Writer) {
+	var status model.AutomationStatus
+	if err := call("GET", "/v1/status", nil, &status); err != nil {
+		fmt.Fprintln(errOut, "stato retention non verificato:", err)
+		return
+	}
+	if status.MonitoringState == model.MonitoringPaused && status.DeletionBlocked &&
+		status.Enabled && status.MailTested && !status.ResumePending && !status.ManualPaused &&
+		status.ActiveAnomalies == 0 {
+		fmt.Fprintln(errOut, "\n"+model.ResumeHint)
+	}
 }

@@ -6,6 +6,21 @@ are installed on a server. Published versions and their artifacts are listed in
 
 ## Unreleased
 
+## 0.5.4
+
+This patch makes a retention suspension left by a resolved incident visible to
+the administrator, who previously got only an internal code and no instruction.
+Protocol, catalogue and archive formats and the systemd units are unchanged from
+0.5.3: replace all binaries together and restart the services.
+
+- After an incident is resolved or a missing copy is acknowledged, the
+  resolution mail and the output of `monitoring acknowledge` and
+  `monitoring exclude` say that `retention resume` is needed. The instruction
+  appears only when resume would be accepted: no other blocking incident open,
+  automation enabled, mail tested, and no resume already booked.
+- The hint goes to standard error, so the JSON on standard output stays
+  parseable. A failed status read is reported and does not fail the command.
+
 ## 0.5.3
 
 This patch rebuilds all binaries with Go 1.27.4 for a standard-library security
