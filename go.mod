@@ -4,8 +4,8 @@ go 1.27.4
 
 require (
 	filippo.io/age v1.3.2
-	github.com/mattn/go-sqlite3 v1.14.52
-	golang.org/x/sys v0.48.0
+	github.com/mattn/go-sqlite3 v1.14.53
+	golang.org/x/sys v0.50.0
 )
 
 require (
