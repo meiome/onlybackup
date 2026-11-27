@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	netmail "net/mail"
 	"net/smtp"
@@ -44,7 +45,20 @@ type Service struct {
 	// CycleInterval is the expected time between cycles, used to size the
 	// per-cycle scrub budget (default five minutes).
 	CycleInterval time.Duration
+	// MailStartupGrace is how long after the first mail cycle of this process
+	// network failures (DNS lookup, connection) stay queued for retry without
+	// opening the smtp:delivery anomaly, until one delivery succeeds (default
+	// ten minutes; negative disables it). It covers a network or local
+	// resolver that is not ready yet at boot. SMTP protocol errors and test
+	// mail failures always open the anomaly.
+	MailStartupGrace time.Duration
+
+	mailMu        sync.Mutex
+	mailStartedAt time.Time
+	mailDelivered bool
 }
+
+const defaultMailStartupGrace = 10 * time.Minute
 
 const (
 	maintenanceLeaseDuration = 10 * time.Minute
@@ -1028,6 +1042,7 @@ func (s *Service) deliverMail(ctx context.Context, settings model.MailSettings, 
 	if s.Mail == nil || settings.Host == "" {
 		return nil
 	}
+	s.noteMailCycle()
 	var messages []model.MailMessage
 	if err := s.call(ctx, "GET", "/v1/mail/due", nil, &messages); err != nil {
 		return err
@@ -1038,12 +1053,69 @@ func (s *Service) deliverMail(ctx context.Context, settings model.MailSettings, 
 			return confirmErr
 		}
 		if err != nil {
+			if !strings.HasPrefix(message.StableID, "mail-test:") && transientMailNetworkError(err) && s.mailStartupPending() {
+				// At boot the network or the local resolver may not be ready yet.
+				// The message stays queued with backoff; opening the anomaly here
+				// would suspend retention once the transient failure clears.
+				log.Printf("consegna mail rinviata durante l'avvio: %v", err)
+				continue
+			}
 			_ = s.openFinding(ctx, policy.Finding{StableKey: "smtp:delivery", Kind: "smtp", Detail: err.Error()})
 			continue
 		}
+		s.markMailDelivered()
 		_ = s.call(ctx, "POST", "/v1/anomaly/resolve", map[string]string{"stable_key": "smtp:delivery"}, nil)
 	}
 	return nil
+}
+
+// noteMailCycle records the first mail cycle of this process. It reads the
+// process clock, whose monotonic reading is immune to wall clock steps (NTP
+// at boot), rather than the writer's persisted check time.
+func (s *Service) noteMailCycle() {
+	s.mailMu.Lock()
+	if s.mailStartedAt.IsZero() {
+		s.mailStartedAt = s.Now()
+	}
+	s.mailMu.Unlock()
+}
+
+// mailStartupPending reports whether a delivery failure now still falls in
+// the startup grace: no delivery has succeeded yet in this process and its
+// first mail cycle is more recent than MailStartupGrace.
+func (s *Service) mailStartupPending() bool {
+	s.mailMu.Lock()
+	defer s.mailMu.Unlock()
+	if s.mailDelivered || s.mailStartedAt.IsZero() {
+		return false
+	}
+	grace := s.MailStartupGrace
+	if grace < 0 {
+		return false
+	}
+	if grace == 0 {
+		grace = defaultMailStartupGrace
+	}
+	return s.Now().Sub(s.mailStartedAt) < grace
+}
+
+// transientMailNetworkError reports whether err comes from resolving or
+// connecting to the SMTP server, the failures expected while the network is
+// still coming up. Errors from the SMTP conversation (TLS, authentication,
+// rejected addresses) and local credential problems are not transient.
+func transientMailNetworkError(err error) bool {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
+func (s *Service) markMailDelivered() {
+	s.mailMu.Lock()
+	s.mailDelivered = true
+	s.mailMu.Unlock()
 }
 
 type SMTP struct {

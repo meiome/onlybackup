@@ -6,6 +6,25 @@ are installed on a server. Published versions and their artifacts are listed in
 
 ## Unreleased
 
+## 0.5.5
+
+This patch stops a mail failure at boot from leaving retention suspended.
+Protocol, catalogue and archive formats are unchanged from 0.5.4. Replace all
+binaries together and install the updated
+`deploy/onlybackup-maintenance.service`, then run `systemctl daemon-reload`
+before restarting the services.
+
+- Maintenance no longer opens the `smtp:delivery` anomaly when it cannot
+  resolve or reach the SMTP server in the first ten minutes after its first
+  mail cycle, until one delivery succeeds: the mail stays queued and is
+  retried, and the failure is logged. At boot the local DNS resolver could
+  still be down, and the anomaly, closed minutes later, left retention
+  suspended until `retention resume`. SMTP protocol errors (TLS,
+  authentication, rejected addresses), test mail failures, `--once` runs,
+  failures that persist past the grace and failures after a successful
+  delivery still open the anomaly at once.
+- The maintenance unit now also starts after `nss-lookup.target`.
+
 ## 0.5.4
 
 This patch makes a retention suspension left by a resolved incident visible to
