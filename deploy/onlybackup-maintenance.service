@@ -1,6 +1,6 @@
 [Unit]
 Description=OnlyBackup monitoring, mail and retention maintenance
-After=local-fs.target network-online.target onlybackup-writer.service
+After=local-fs.target network-online.target nss-lookup.target onlybackup-writer.service
 Wants=network-online.target
 
 [Service]

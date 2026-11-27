@@ -305,6 +305,20 @@ new quarantine and purge authorizations. Recovery and reconciliation of
 physical work already performed, and completion of final permissions already
 granted, remain possible while blocked.
 
+For ten minutes after the first mail cycle of a maintenance process, until one
+delivery succeeds, a failure to resolve or connect to the SMTP server leaves
+the message queued for retry with backoff, is written to the journal and opens
+no `smtp:delivery` anomaly. At boot the network or the local resolver may not
+be ready yet; without this grace the transient failure would resolve on its own
+and still leave retention suspended until `retention resume`. Because the grace
+starts at the end of the first cycle and retries follow the backoff, a failure
+that persists opens the anomaly between ten and fifteen minutes after start
+with the default five-minute interval, or at the second cycle with an interval
+longer than ten minutes. Errors in
+the SMTP conversation (TLS, authentication, rejected addresses), `mail test`
+messages, runs with `--once`, and any failure after a successful delivery open
+the anomaly immediately, as before.
+
 The specific `capacity:quarantine-margin` warning (not enough available space
 for the next 48 hours of deposits plus the reserve) remains visible and sends
 mail, but does not suspend quarantine or purge. Otherwise the warning would

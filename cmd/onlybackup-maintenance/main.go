@@ -43,6 +43,11 @@ func run(args []string) error {
 	service := maintenance.New(*root, *socket, owner, maintenance.SMTP{CredentialsPath: *credentials, Timeout: 30 * time.Second})
 	service.ScrubPeriod = *scrub
 	service.CycleInterval = *interval
+	if *once {
+		// A single cycle is a fresh process each time: a startup grace would
+		// hide a persistent SMTP failure forever.
+		service.MailStartupGrace = -1
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := service.RunOnce(ctx); err != nil {
